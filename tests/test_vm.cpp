@@ -111,6 +111,18 @@ int main() {
     assert(nested_control);
     assert(std::get<double>(nested_control.value()) == 3.0);
 
+    const auto function_call = vm.execute_source("local function add(a, b) return a + b end; return add(7, 8)");
+    assert(function_call);
+    assert(std::get<double>(function_call.value()) == 15.0);
+
+    const auto function_without_return = vm.execute_source("local function noop() local x = 1 end; return noop()");
+    assert(function_without_return);
+    assert(std::holds_alternative<Nil>(function_without_return.value()));
+
+    const auto function_arity = vm.execute_source("local function one(a) return a end; return one()");
+    assert(!function_arity);
+    assert(function_arity.error().find("arguments") != std::string::npos);
+
 
     return 0;
 }
