@@ -1,6 +1,7 @@
 #include "luau_vm/vm.hpp"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
@@ -14,7 +15,7 @@ namespace luau_vm {
 namespace {
 
 enum class TokenKind {
-    End, Number, String, Identifier,
+    End, Number, , Identifier,
     Plus, Minus, Star, Slash, FloorSlash, Percent, Caret, Concat,
     LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
     Dot, Semicolon, Comma, Hash,
@@ -197,12 +198,27 @@ struct FunctionDef {
     std::vector<Token> body;
 };
 
+struct ExecutionState {
+    VMOptions limits;
+    std::size_t steps{};
+    std::size_t table_entries{};
+    std::size_t call_depth{};
+
+    void charge(std::size_t amount = 1) {
+        if (amount > limits.max_execution_steps - std::min(steps, limits.max_execution_steps))
+            throw std::runtime_error("Execution step limit exceeded");
+        steps += amount;
+    }
+};
+
 class Parser {
 public:
     explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables,
-                    std::vector<FunctionDef>& functions,
+                    std::vector<FunctionDef>& functions, ExecutionState& state,
                     std::unordered_map<std::string, Value> initial = {})
-        : tokens_(std::move(tokens)), tables_(tables), functions_(functions) { scopes_.emplace_back(std::move(initial)); }
+        : tokens_(std::move(tokens)), tables_(tables), functions_(functions), state_(state) {
+        scopes_.emplace_back(std::move(initial));
+    }
 
     Value run() {
         while (!check(TokenKind::End) && !returned_) {
@@ -356,7 +372,9 @@ private:
             Value condition = expression();
             current_ = saved;
             if (!truthy(condition)) break;
-            if (++iterations > 100000) fail_at(tokens_[condition_start], "Loop iteration limit exceeded");
+            if (++iterations > state_.limits.max_execution_steps)
+                fail_at(tokens_[condition_start], "Loop iteration limit exceeded");
+            state_.charge();
             execute_range(body_start, block_end);
         }
         current_ = block_end;
@@ -381,7 +399,9 @@ private:
         def.body.assign(tokens_.begin() + static_cast<std::ptrdiff_t>(body_start),
                         tokens_.begin() + static_cast<std::ptrdiff_t>(end));
         def.body.push_back({TokenKind::End, "", tokens_[end].offset});
-        if (functions_.size() >= static_cast<std::size_t>(UINT32_MAX)) fail_at(name_token, "Too many functions");
+        if (functions_.size() >= state_.limits.max_functions ||
+            functions_.size() >= static_cast<std::size_t>(UINT32_MAX))
+            fail_at(name_token, "Function limit exceeded");
         const auto index = static_cast<std::uint32_t>(functions_.size());
         functions_.push_back(std::move(def));
         scopes_.back()[name_token.text] = FunctionRef{index};
@@ -522,7 +542,8 @@ private:
             consume(TokenKind::RightParen, "Expected ')' after expression");
         } else if (match(TokenKind::LeftBrace)) {
             const auto open = previous();
-            if (tables_.size() >= static_cast<std::size_t>(UINT32_MAX)) fail_at(open, "Too many tables");
+            if (tables_.size() >= state_.limits.max_tables || tables_.size() >= static_cast<std::size_t>(UINT32_MAX))
+                fail_at(open, "Table limit exceeded");
             const auto table_index = static_cast<std::uint32_t>(tables_.size());
             tables_.emplace_back();
             value = TableRef{table_index};
@@ -548,8 +569,16 @@ private:
                 }
                 auto& table = tables_[table_index];
                 const auto encoded = table_key(key, key_token);
-                if (std::holds_alternative<Nil>(item)) table.erase(encoded);
-                else table[encoded] = std::move(item);
+                const auto existing = table.find(encoded);
+                if (std::holds_alternative<Nil>(item)) {
+                    if (existing != table.end()) { table.erase(existing); --state_.table_entries; }
+                } else {
+                    if (existing == table.end()) {
+                        if (state_.table_entries >= state_.limits.max_table_entries) fail_at(key_token, "Table entry limit exceeded");
+                        ++state_.table_entries;
+                    }
+                    table[encoded] = std::move(item);
+                }
                 if (!match(TokenKind::Comma) && !match(TokenKind::Semicolon)) break;
             }
             consume(TokenKind::RightBrace, "Expected '}' after table constructor");
@@ -582,8 +611,16 @@ private:
                 fail_at(call_token, "Function expected " + std::to_string(function.parameters.size()) + " arguments, got " + std::to_string(arguments.size()));
             std::unordered_map<std::string, Value> locals;
             for (std::size_t i = 0; i < arguments.size(); ++i) locals[function.parameters[i]] = std::move(arguments[i]);
-            Parser callee(function.body, tables_, functions_, std::move(locals));
-            value = callee.run();
+            if (state_.call_depth >= state_.limits.max_call_depth) fail_at(call_token, "Function call depth limit exceeded");
+            ++state_.call_depth;
+            try {
+                Parser callee(function.body, tables_, functions_, state_, std::move(locals));
+                value = callee.run();
+            } catch (...) {
+                --state_.call_depth;
+                throw;
+            }
+            --state_.call_depth;
         }
 
         while (true) {
@@ -634,7 +671,10 @@ private:
     bool check_next(TokenKind kind) const { return current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == kind; }
     bool match(TokenKind kind) { if (!check(kind)) return false; advance(); return true; }
     bool match_identifier(std::string_view text) { if (check(TokenKind::Identifier) && peek().text == text) { advance(); return true; } return false; }
-    const Token& advance() { if (!check(TokenKind::End)) ++current_; return previous(); }
+    const Token& advance() {
+        if (!check(TokenKind::End)) { state_.charge(); ++current_; }
+        return previous();
+    }
     const Token& peek() const { return tokens_[current_]; }
     const Token& previous() const { return tokens_[current_ - 1]; }
     Token consume(TokenKind kind, const std::string& message) { if (check(kind)) return advance(); fail(message); }
@@ -661,14 +701,20 @@ private:
     std::vector<std::unordered_map<std::string, Value>> scopes_;
     std::vector<Table>& tables_;
     std::vector<FunctionDef>& functions_;
+    ExecutionState& state_;
     Value return_value_{Nil{}};
     bool returned_{};
 };
 } // namespace
 
-struct VM::Impl { std::vector<Table> tables; std::vector<FunctionDef> functions; };
+struct VM::Impl {
+    explicit Impl(VMOptions configured) : options(configured) {}
+    VMOptions options;
+    std::vector<Table> tables;
+    std::vector<FunctionDef> functions;
+};
 
-VM::VM() : impl_(std::make_unique<Impl>()) {}
+VM::VM(VMOptions options) : impl_(std::make_unique<Impl>(options)) {}
 VM::~VM() = default;
 VM::VM(VM&&) noexcept = default;
 VM& VM::operator=(VM&&) noexcept = default;
@@ -677,8 +723,11 @@ Result<Value> VM::execute_source(std::string_view source) {
     if (!impl_) return Result<Value>::failure("VM is not initialized");
     if (source.empty()) return Result<Value>::failure("Source code is empty");
     try {
+        ExecutionState state{impl_->options};
+        // Recount persistent objects in case the VM has executed earlier snippets.
+        for (const auto& table : impl_->tables) state.table_entries += table.size();
         Lexer lexer(source);
-        Parser parser(lexer.scan(), impl_->tables, impl_->functions);
+        Parser parser(lexer.scan(), impl_->tables, impl_->functions, state);
         return Result<Value>::success(parser.run());
     } catch (const std::exception& e) {
         return Result<Value>::failure(e.what());
