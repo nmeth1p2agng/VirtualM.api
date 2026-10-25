@@ -257,5 +257,30 @@ int main() {
     assert(!too_deep_concat);
     assert(too_deep_concat.error().find("Concatenation nesting limit") != std::string::npos);
 
+    // Stage 9: string size and table mutation limits are enforced.
+    luau_vm::VMOptions string_limits;
+    string_limits.max_string_bytes = 5;
+    luau_vm::VM bounded_string_vm(string_limits);
+    const auto too_long_concat = bounded_string_vm.execute_source("return 'abc' .. 'def'");
+    assert(!too_long_concat);
+    assert(too_long_concat.error().find("String size limit") != std::string::npos);
+    const auto allowed_concat = bounded_string_vm.execute_source("return 'ab' .. 'cd'");
+    assert(allowed_concat);
+    assert(std::get<std::string>(allowed_concat.value()) == "abcd");
+
+    luau_vm::VMOptions mutation_limits;
+    mutation_limits.max_table_entries = 1;
+    luau_vm::VM bounded_mutation_vm(mutation_limits);
+    const auto too_many_mutations = bounded_mutation_vm.execute_source(
+        "local t = {}; t.a = 1; t.b = 2; return 1");
+    assert(!too_many_mutations);
+    assert(too_many_mutations.error().find("Table entry limit") != std::string::npos);
+
+    luau_vm::VM bounded_delete_vm(mutation_limits);
+    const auto mutation_after_delete = bounded_delete_vm.execute_source(
+        "local t = {}; t.a = 1; t.a = nil; t.b = 2; return t.b");
+    assert(mutation_after_delete);
+    assert(std::get<double>(mutation_after_delete.value()) == 2.0);
+
     return 0;
 }
