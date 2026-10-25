@@ -220,5 +220,29 @@ int main() {
                            {OpCode::LoadNil, 0}, {OpCode::Return, 0}};
     assert(luau_vm::verify_bytecode(branch).valid);
 
+    // Runtime protection limits are configurable and fail with explicit errors.
+    luau_vm::VMOptions step_limits;
+    step_limits.max_execution_steps = 12;
+    luau_vm::VM bounded_vm(step_limits);
+    const auto too_many_steps = bounded_vm.execute_source("local i = 0; while true do i = i + 1 end");
+    assert(!too_many_steps);
+    assert(too_many_steps.error().find("Execution step limit") != std::string::npos ||
+           too_many_steps.error().find("Loop iteration limit") != std::string::npos);
+
+    luau_vm::VMOptions table_limits;
+    table_limits.max_tables = 1;
+    luau_vm::VM one_table_vm(table_limits);
+    const auto too_many_tables = one_table_vm.execute_source("local a = {}; local b = {}; return 1");
+    assert(!too_many_tables);
+    assert(too_many_tables.error().find("Table limit") != std::string::npos);
+
+    luau_vm::VMOptions entry_limits;
+    entry_limits.max_table_entries = 1;
+    luau_vm::VM one_entry_vm(entry_limits);
+    const auto too_many_entries = one_entry_vm.execute_source("local t = {a = 1, b = 2}; return 1");
+    assert(!too_many_entries);
+    assert(too_many_entries.error().find("Table entry limit") != std::string::npos);
+
+
     return 0;
 }
