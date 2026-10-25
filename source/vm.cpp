@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -41,28 +40,7 @@ public:
             }
             const auto start = pos_;
             if (is_digit(c) || (c == '.' && is_digit(peek(1)))) {
-                if (c == '.') {
-                    ++pos_;
-                    while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
-                } else {
-                    while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
-                    // A dot begins a decimal fraction only when it is not the
-                    // first character of Luau's concatenation operator "..".
-                    if (pos_ < source_.size() && source_[pos_] == '.' && peek(1) != '.') {
-                        ++pos_;
-                        while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
-                    }
-                }
-                if (pos_ < source_.size() && (source_[pos_] == 'e' || source_[pos_] == 'E')) {
-                    const std::size_t exponent_start = pos_++;
-                    if (pos_ < source_.size() && (source_[pos_] == '+' || source_[pos_] == '-')) ++pos_;
-                    const std::size_t digits_start = pos_;
-                    while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
-                    if (digits_start == pos_) {
-                        throw std::runtime_error("Invalid exponent at offset " + std::to_string(exponent_start));
-                    }
-                }
-                tokens.push_back({TokenKind::Number, std::string(source_.substr(start, pos_ - start)), start});
+                scan_number(tokens, start);
                 continue;
             }
             if (is_alpha(c) || c == '_') {
@@ -72,8 +50,7 @@ public:
                 continue;
             }
             if (c == '\'' || c == '"') {
-                const char quote = c; ++pos_; std::string value;
-                bool closed = false;
+                const char quote = c; ++pos_; std::string value; bool closed = false;
                 while (pos_ < source_.size()) {
                     char ch = source_[pos_++];
                     if (ch == quote) { closed = true; break; }
@@ -95,39 +72,28 @@ public:
                 tokens.push_back({TokenKind::String, std::move(value), start});
                 continue;
             }
-            auto two = [&](char expected, TokenKind yes, TokenKind no) {
-                ++pos_;
-                if (pos_ < source_.size() && source_[pos_] == expected) {
-                    ++pos_; tokens.push_back({yes, std::string(source_.substr(start, 2)), start});
-                } else tokens.push_back({no, std::string(1, c), start});
-            };
             switch (c) {
-                case '+': ++pos_; tokens.push_back({TokenKind::Plus, "+", start}); break;
-                case '-': ++pos_; tokens.push_back({TokenKind::Minus, "-", start}); break;
-                case '*': ++pos_; tokens.push_back({TokenKind::Star, "*", start}); break;
-                case '/': ++pos_; tokens.push_back({TokenKind::Slash, "/", start}); break;
-                case '%': ++pos_; tokens.push_back({TokenKind::Percent, "%", start}); break;
-                case '^': ++pos_; tokens.push_back({TokenKind::Caret, "^", start}); break;
+                case '+': simple(tokens, TokenKind::Plus, start); break;
+                case '-': simple(tokens, TokenKind::Minus, start); break;
+                case '*': simple(tokens, TokenKind::Star, start); break;
+                case '/': simple(tokens, TokenKind::Slash, start); break;
+                case '%': simple(tokens, TokenKind::Percent, start); break;
+                case '^': simple(tokens, TokenKind::Caret, start); break;
+                case '(': simple(tokens, TokenKind::LeftParen, start); break;
+                case ')': simple(tokens, TokenKind::RightParen, start); break;
+                case ';': simple(tokens, TokenKind::Semicolon, start); break;
+                case ',': simple(tokens, TokenKind::Comma, start); break;
                 case '.':
-                    if (peek(1) == '.') {
-                        pos_ += 2;
-                        tokens.push_back({TokenKind::Concat, "..", start});
-                    } else {
-                        throw std::runtime_error("Unexpected '.' at offset " + std::to_string(start));
-                    }
+                    if (peek(1) == '.') { pos_ += 2; tokens.push_back({TokenKind::Concat, "..", start}); }
+                    else throw std::runtime_error("Unexpected '.' at offset " + std::to_string(start));
                     break;
-                case '(': ++pos_; tokens.push_back({TokenKind::LeftParen, "(", start}); break;
-                case ')': ++pos_; tokens.push_back({TokenKind::RightParen, ")", start}); break;
-                case ';': ++pos_; tokens.push_back({TokenKind::Semicolon, ";", start}); break;
-                case ',': ++pos_; tokens.push_back({TokenKind::Comma, ",", start}); break;
-                case '=': two('=', TokenKind::EqualEqual, TokenKind::Equal); break;
+                case '=': two(tokens, '=', TokenKind::EqualEqual, TokenKind::Equal, start); break;
                 case '~':
-                    ++pos_;
-                    if (pos_ < source_.size() && source_[pos_] == '=') { ++pos_; tokens.push_back({TokenKind::NotEqual, "~=", start}); }
+                    if (peek(1) == '=') { pos_ += 2; tokens.push_back({TokenKind::NotEqual, "~=", start}); }
                     else throw std::runtime_error("Unexpected '~' at offset " + std::to_string(start));
                     break;
-                case '<': two('=', TokenKind::LessEqual, TokenKind::Less); break;
-                case '>': two('=', TokenKind::GreaterEqual, TokenKind::Greater); break;
+                case '<': two(tokens, '=', TokenKind::LessEqual, TokenKind::Less, start); break;
+                case '>': two(tokens, '=', TokenKind::GreaterEqual, TokenKind::Greater, start); break;
                 default: throw std::runtime_error("Unexpected character at offset " + std::to_string(start));
             }
         }
@@ -138,6 +104,31 @@ private:
     static bool is_digit(char c) { return c >= '0' && c <= '9'; }
     static bool is_alpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
     char peek(std::size_t ahead) const { return pos_ + ahead < source_.size() ? source_[pos_ + ahead] : '\0'; }
+    void simple(std::vector<Token>& out, TokenKind kind, std::size_t start) {
+        out.push_back({kind, std::string(1, source_[pos_]), start}); ++pos_;
+    }
+    void two(std::vector<Token>& out, char expected, TokenKind yes, TokenKind no, std::size_t start) {
+        const char first = source_[pos_++];
+        if (pos_ < source_.size() && source_[pos_] == expected) {
+            ++pos_; out.push_back({yes, std::string(source_.substr(start, 2)), start});
+        } else out.push_back({no, std::string(1, first), start});
+    }
+    void scan_number(std::vector<Token>& out, std::size_t start) {
+        bool saw_dot = false;
+        if (source_[pos_] == '.') { saw_dot = true; ++pos_; }
+        while (is_digit(peek(0))) ++pos_;
+        if (!saw_dot && peek(0) == '.' && peek(1) != '.') {
+            saw_dot = true; ++pos_;
+            while (is_digit(peek(0))) ++pos_;
+        }
+        if (peek(0) == 'e' || peek(0) == 'E') {
+            const auto exponent_start = pos_++;
+            if (peek(0) == '+' || peek(0) == '-') ++pos_;
+            if (!is_digit(peek(0))) throw std::runtime_error("Invalid exponent at offset " + std::to_string(exponent_start));
+            while (is_digit(peek(0))) ++pos_;
+        }
+        out.push_back({TokenKind::Number, std::string(source_.substr(start, pos_ - start)), start});
+    }
     std::string_view source_;
     std::size_t pos_{};
 };
@@ -162,6 +153,17 @@ double number(const Value& v, const Token& token) {
     throw std::runtime_error("Expected number at offset " + std::to_string(token.offset) + ", got " + type_name(v));
 }
 
+std::string stringify_for_concat(const Value& value, const Token& token) {
+    if (const auto* s = std::get_if<std::string>(&value)) return *s;
+    if (const auto* n = std::get_if<double>(&value)) {
+        std::string result = std::to_string(*n);
+        while (result.size() > 1 && result.back() == '0') result.pop_back();
+        if (!result.empty() && result.back() == '.') result.pop_back();
+        return result;
+    }
+    throw std::runtime_error("Concatenation expects strings or numbers at offset " + std::to_string(token.offset));
+}
+
 class Parser {
 public:
     explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
@@ -176,8 +178,8 @@ public:
             } else if (match_identifier("return")) {
                 if (check(TokenKind::End) || check(TokenKind::Semicolon)) return Nil{};
                 Value result = expression();
-                if (match(TokenKind::Semicolon)) {}
-                if (!check(TokenKind::End)) fail("Only one return value is supported in this initial milestone");
+                match(TokenKind::Semicolon);
+                if (!check(TokenKind::End)) fail("Only one return value is supported in this milestone");
                 return result;
             } else if (check(TokenKind::Identifier) && check_next(TokenKind::Equal)) {
                 const auto name = advance().text; advance();
@@ -196,8 +198,7 @@ private:
     Value equality() {
         Value left = comparison();
         while (match(TokenKind::EqualEqual) || match(TokenKind::NotEqual)) {
-            const auto op = previous().kind; Value right = comparison();
-            bool equal = false;
+            const auto op = previous().kind; Value right = comparison(); bool equal = false;
             if (left.index() == right.index()) {
                 if (std::holds_alternative<Nil>(left)) equal = true;
                 else if (const auto* a = std::get_if<bool>(&left)) equal = *a == std::get<bool>(right);
@@ -210,9 +211,9 @@ private:
         return left;
     }
     Value comparison() {
-        Value left = concatenation();
+        Value left = concat();
         while (match(TokenKind::Less) || match(TokenKind::LessEqual) || match(TokenKind::Greater) || match(TokenKind::GreaterEqual)) {
-            const auto op = previous(); Value right = concatenation();
+            const auto op = previous(); Value right = concat();
             if (std::holds_alternative<std::string>(left) && std::holds_alternative<std::string>(right)) {
                 const auto& a = std::get<std::string>(left); const auto& b = std::get<std::string>(right);
                 if (op.kind == TokenKind::Less) left = a < b;
@@ -229,19 +230,12 @@ private:
         }
         return left;
     }
-    Value concatenation() {
+    Value concat() {
         Value left = term();
         if (match(TokenKind::Concat)) {
             const auto op = previous();
-            Value right = concatenation(); // Luau concatenation is right-associative.
-            const auto* lhs = std::get_if<std::string>(&left);
-            const auto* rhs = std::get_if<std::string>(&right);
-            if (!lhs || !rhs) {
-                throw std::runtime_error(
-                    "Concatenation currently requires string operands at offset " +
-                    std::to_string(op.offset));
-            }
-            return *lhs + *rhs;
+            Value right = concat(); // right-associative, as in Lua/Luau
+            left = stringify_for_concat(left, op) + stringify_for_concat(right, op);
         }
         return left;
     }
@@ -250,11 +244,9 @@ private:
         while (match(TokenKind::Plus) || match(TokenKind::Minus)) {
             const auto op = previous(); Value right = factor();
             if (op.kind == TokenKind::Plus && std::holds_alternative<std::string>(left) && std::holds_alternative<std::string>(right))
-                left = std::get<std::string>(left) + std::get<std::string>(right);
-            else {
-                const double a = number(left, op), b = number(right, op);
-                left = op.kind == TokenKind::Plus ? a + b : a - b;
-            }
+                throw std::runtime_error("Use '..' to concatenate strings at offset " + std::to_string(op.offset));
+            const double a = number(left, op), b = number(right, op);
+            left = op.kind == TokenKind::Plus ? a + b : a - b;
         }
         return left;
     }
@@ -269,23 +261,15 @@ private:
         }
         return left;
     }
-    Value power() {
-        Value left = primary();
-        if (match(TokenKind::Caret)) {
-            const auto op = previous();
-            // Parsing the right operand as unary preserves right associativity
-            // and allows expressions such as 2 ^ -2.
-            left = std::pow(number(left, op), number(unary(), op));
-        }
-        return left;
-    }
     Value unary() {
-        if (match(TokenKind::Minus)) {
-            const auto op = previous();
-            return -number(unary(), op);
-        }
+        if (match(TokenKind::Minus)) { const auto op = previous(); return -number(unary(), op); }
         if (match_identifier("not")) return !truthy(unary());
         return power();
+    }
+    Value power() {
+        Value left = primary();
+        if (match(TokenKind::Caret)) { const auto op = previous(); left = std::pow(number(left, op), number(unary(), op)); }
+        return left;
     }
     Value primary() {
         if (match(TokenKind::Number)) {
