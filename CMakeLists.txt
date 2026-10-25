@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(luau_vm STATIC source/vm.cpp)
+add_library(luau_vm STATIC source/vm.cpp source/bytecode.cpp)
 target_include_directories(luau_vm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(luau_vm PRIVATE -Wall -Wextra -Wpedantic)
 
