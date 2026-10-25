@@ -229,6 +229,14 @@ int main() {
     assert(too_many_steps.error().find("Execution step limit") != std::string::npos ||
            too_many_steps.error().find("Loop iteration limit") != std::string::npos);
 
+    // Expression-heavy code must consume the same execution budget even without loops.
+    luau_vm::VMOptions expression_limits;
+    expression_limits.max_execution_steps = 2;
+    luau_vm::VM expression_bounded_vm(expression_limits);
+    const auto too_many_expressions = expression_bounded_vm.execute_source("return 1 + 2 + 3 + 4");
+    assert(!too_many_expressions);
+    assert(too_many_expressions.error().find("Execution step limit exceeded") != std::string::npos);
+
     luau_vm::VMOptions table_limits;
     table_limits.max_tables = 1;
     luau_vm::VM one_table_vm(table_limits);
