@@ -198,7 +198,7 @@ public:
     explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables,
                     std::vector<FunctionDef>& functions,
                     std::unordered_map<std::string, Value> initial = {})
-        : tokens_(std::move(tokens)), variables_(std::move(initial)), tables_(tables), functions_(functions) {}
+        : tokens_(std::move(tokens)), tables_(tables), functions_(functions) { scopes_.emplace_back(std::move(initial)); }
 
     Value run() {
         while (!check(TokenKind::End) && !returned_) {
@@ -222,20 +222,20 @@ private:
             const auto name = consume(TokenKind::Identifier, "Expected variable name after 'local'").text;
             Value value = Nil{};
             if (match(TokenKind::Equal)) value = expression();
-            variables_[name] = std::move(value);
+            scopes_.back()[name] = std::move(value);
         } else if (match_identifier("return")) {
             if (check(TokenKind::End) || check(TokenKind::Semicolon) || is_block_terminator()) return_value_ = Nil{};
             else return_value_ = expression();
             returned_ = true;
         } else if (check(TokenKind::Identifier) && check_next(TokenKind::Equal)) {
             const auto name = advance().text; advance();
-            auto it = variables_.find(name);
-            if (it == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
-            it->second = expression();
+            auto* slot = find_variable(name);
+            if (!slot) fail("Assignment to unknown variable '" + name + "'");
+            *slot = expression();
         } else if (is_simple_table_assignment()) {
             const auto name = advance().text;
-            const auto variable = variables_.find(name);
-            if (variable == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
+            const auto* variable = find_variable_value(name);
+            if (!variable) fail("Assignment to unknown variable '" + name + "'");
             Token key_token = peek();
             Value key = Nil{};
             if (match(TokenKind::Dot)) {
@@ -249,8 +249,8 @@ private:
             }
             consume(TokenKind::Equal, "Expected '=' in table assignment");
             Value assigned = expression();
-            const auto* ref = std::get_if<TableRef>(&variable->second);
-            if (!ref) fail_at(key_token, "Attempt to index a " + type_name(variable->second) + " value");
+            const auto* ref = std::get_if<TableRef>(variable);
+            if (!ref) fail_at(key_token, "Attempt to index a " + type_name(*variable) + " value");
             if (ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
             const auto encoded = table_key(key, key_token);
             if (std::holds_alternative<Nil>(assigned)) tables_[ref->index].erase(encoded);
@@ -277,13 +277,21 @@ private:
 
     void execute_range(std::size_t begin, std::size_t end) {
         const auto saved = current_;
+        scopes_.emplace_back();
         current_ = begin;
-        while (current_ < end && !returned_) {
-            if (match_identifier("if")) execute_if();
-            else if (match_identifier("while")) execute_while();
-            else statement();
-            match(TokenKind::Semicolon);
+        try {
+            while (current_ < end && !returned_) {
+                if (match_identifier("if")) execute_if();
+                else if (match_identifier("while")) execute_while();
+                else statement();
+                match(TokenKind::Semicolon);
+            }
+        } catch (...) {
+            scopes_.pop_back();
+            current_ = saved;
+            throw;
         }
+        scopes_.pop_back();
         current_ = saved;
     }
 
@@ -372,7 +380,7 @@ private:
         if (functions_.size() >= static_cast<std::size_t>(UINT32_MAX)) fail_at(name_token, "Too many functions");
         const auto index = static_cast<std::uint32_t>(functions_.size());
         functions_.push_back(std::move(def));
-        variables_[name_token.text] = FunctionRef{index};
+        scopes_.back()[name_token.text] = FunctionRef{index};
         current_ = end + 1;
         (void)is_local;
     }
@@ -509,9 +517,9 @@ private:
             else if (token.text == "true") value = true;
             else if (token.text == "false") value = false;
             else {
-                const auto it = variables_.find(token.text);
-                if (it == variables_.end()) fail_at(token, "Unknown variable '" + token.text + "'");
-                value = it->second;
+                const auto* found = find_variable_value(token.text);
+                if (!found) fail_at(token, "Unknown variable '" + token.text + "'");
+                value = *found;
             }
         } else {
             fail("Expected expression");
@@ -591,9 +599,24 @@ private:
     [[noreturn]] void fail(const std::string& message) const { fail_at(peek(), message); }
     [[noreturn]] void fail_at(const Token& token, const std::string& message) const { throw std::runtime_error(message + " at offset " + std::to_string(token.offset)); }
 
+    Value* find_variable(const std::string& name) {
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+            const auto found = it->find(name);
+            if (found != it->end()) return &found->second;
+        }
+        return nullptr;
+    }
+    const Value* find_variable_value(const std::string& name) const {
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+            const auto found = it->find(name);
+            if (found != it->end()) return &found->second;
+        }
+        return nullptr;
+    }
+
     std::vector<Token> tokens_;
     std::size_t current_{};
-    std::unordered_map<std::string, Value> variables_;
+    std::vector<std::unordered_map<std::string, Value>> scopes_;
     std::vector<Table>& tables_;
     std::vector<FunctionDef>& functions_;
     Value return_value_{Nil{}};
