@@ -188,10 +188,17 @@ std::string table_key(const Value& value, const Token& token) {
     throw std::runtime_error("Unsupported table index at offset " + std::to_string(token.offset));
 }
 
+struct FunctionDef {
+    std::vector<std::string> parameters;
+    std::vector<Token> body;
+};
+
 class Parser {
 public:
-    explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables)
-        : tokens_(std::move(tokens)), tables_(tables) {}
+    explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables,
+                    std::vector<FunctionDef>& functions,
+                    std::unordered_map<std::string, Value> initial = {})
+        : tokens_(std::move(tokens)), variables_(std::move(initial)), tables_(tables), functions_(functions) {}
 
     Value run() {
         while (!check(TokenKind::End) && !returned_) {
@@ -199,6 +206,8 @@ public:
                 execute_if();
             } else if (match_identifier("while")) {
                 execute_while();
+            } else if (match_identifier("function")) {
+                function_statement(false);
             } else {
                 statement();
             }
@@ -209,6 +218,7 @@ public:
 private:
     void statement() {
         if (match_identifier("local")) {
+            if (match_identifier("function")) { function_statement(true); return; }
             const auto name = consume(TokenKind::Identifier, "Expected variable name after 'local'").text;
             Value value = Nil{};
             if (match(TokenKind::Equal)) value = expression();
@@ -259,7 +269,7 @@ private:
         for (std::size_t i = from; i < tokens_.size(); ++i) {
             if (tokens_[i].kind != TokenKind::Identifier) continue;
             const auto& word = tokens_[i].text;
-            if (word == "if" || word == "while") ++depth;
+            if (word == "if" || word == "while" || word == "function") ++depth;
             else if (word == "end" && --depth == 0) return i;
         }
         throw std::runtime_error("Expected 'end' for control-flow block");
@@ -313,7 +323,7 @@ private:
         for (std::size_t i = from; i < block_end; ++i) {
             if (tokens_[i].kind != TokenKind::Identifier) continue;
             const auto& word = tokens_[i].text;
-            if (word == "if" || word == "while") ++depth;
+            if (word == "if" || word == "while" || word == "function") ++depth;
             else if (word == "end" && depth > 0) --depth;
             else if (depth == 0 && (word == "elseif" || word == "else")) return i;
         }
@@ -340,6 +350,31 @@ private:
         current_ = block_end;
         consume_identifier("end", "Expected 'end' after while block");
         (void)condition_end;
+    }
+
+    void function_statement(bool is_local) {
+        const Token name_token = consume(TokenKind::Identifier, "Expected function name");
+        consume(TokenKind::LeftParen, "Expected '(' after function name");
+        std::vector<std::string> parameters;
+        if (!check(TokenKind::RightParen)) {
+            do {
+                parameters.push_back(consume(TokenKind::Identifier, "Expected parameter name").text);
+            } while (match(TokenKind::Comma));
+        }
+        consume(TokenKind::RightParen, "Expected ')' after parameters");
+        const std::size_t body_start = current_;
+        const std::size_t end = find_block_end(body_start);
+        FunctionDef def;
+        def.parameters = std::move(parameters);
+        def.body.assign(tokens_.begin() + static_cast<std::ptrdiff_t>(body_start),
+                        tokens_.begin() + static_cast<std::ptrdiff_t>(end));
+        def.body.push_back({TokenKind::End, "", tokens_[end].offset});
+        if (functions_.size() >= static_cast<std::size_t>(UINT32_MAX)) fail_at(name_token, "Too many functions");
+        const auto index = static_cast<std::uint32_t>(functions_.size());
+        functions_.push_back(std::move(def));
+        variables_[name_token.text] = FunctionRef{index};
+        current_ = end + 1;
+        (void)is_local;
     }
 
     void consume_identifier(std::string_view word, const std::string& message) {
@@ -482,6 +517,25 @@ private:
             fail("Expected expression");
         }
 
+        while (check(TokenKind::LeftParen)) {
+            const Token call_token = advance();
+            std::vector<Value> arguments;
+            if (!check(TokenKind::RightParen)) {
+                do { arguments.push_back(expression()); } while (match(TokenKind::Comma));
+            }
+            consume(TokenKind::RightParen, "Expected ')' after function arguments");
+            const auto* function_ref = std::get_if<FunctionRef>(&value);
+            if (!function_ref) fail_at(call_token, "Attempt to call a " + type_name(value) + " value");
+            if (function_ref->index >= functions_.size()) fail_at(call_token, "Invalid function reference");
+            const FunctionDef function = functions_[function_ref->index];
+            if (arguments.size() != function.parameters.size())
+                fail_at(call_token, "Function expected " + std::to_string(function.parameters.size()) + " arguments, got " + std::to_string(arguments.size()));
+            std::unordered_map<std::string, Value> locals;
+            for (std::size_t i = 0; i < arguments.size(); ++i) locals[function.parameters[i]] = std::move(arguments[i]);
+            Parser callee(function.body, tables_, functions_, std::move(locals));
+            value = callee.run();
+        }
+
         while (true) {
             Token key_token = peek();
             Value key = Nil{};
@@ -541,12 +595,13 @@ private:
     std::size_t current_{};
     std::unordered_map<std::string, Value> variables_;
     std::vector<Table>& tables_;
+    std::vector<FunctionDef>& functions_;
     Value return_value_{Nil{}};
     bool returned_{};
 };
 } // namespace
 
-struct VM::Impl { std::vector<Table> tables; };
+struct VM::Impl { std::vector<Table> tables; std::vector<FunctionDef> functions; };
 
 VM::VM() : impl_(std::make_unique<Impl>()) {}
 VM::~VM() = default;
@@ -558,7 +613,7 @@ Result<Value> VM::execute_source(std::string_view source) {
     if (source.empty()) return Result<Value>::failure("Source code is empty");
     try {
         Lexer lexer(source);
-        Parser parser(lexer.scan(), impl_->tables);
+        Parser parser(lexer.scan(), impl_->tables, impl_->functions);
         return Result<Value>::success(parser.run());
     } catch (const std::exception& e) {
         return Result<Value>::failure(e.what());
