@@ -243,6 +243,22 @@ int main() {
     assert(!too_many_entries);
     assert(too_many_entries.error().find("Table entry limit") != std::string::npos);
 
+
+    // Parser complexity is bounded independently of source byte length.
+    luau_vm::VMOptions token_limits;
+    token_limits.max_tokens = 5;
+    luau_vm::VM token_bounded_vm(token_limits);
+    const auto too_many_tokens = token_bounded_vm.execute_source("local a = 1; return a + 2");
+    assert(!too_many_tokens);
+    assert(too_many_tokens.error().find("Token limit exceeded") != std::string::npos);
+
+    luau_vm::VMOptions enough_tokens;
+    enough_tokens.max_tokens = 20;
+    luau_vm::VM token_ok_vm(enough_tokens);
+    const auto within_token_budget = token_ok_vm.execute_source("return 2 + 3");
+    assert(within_token_budget);
+    assert(std::get<double>(within_token_budget.value()) == 5.0);
+
     // Failed snippets roll back VM-managed objects so they cannot poison later runs.
     luau_vm::VMOptions rollback_limits;
     rollback_limits.max_tables = 1;
