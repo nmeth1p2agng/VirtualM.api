@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.20)
+project(VirtualM_api VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_library(luau_vm STATIC source/vm.cpp)
+target_include_directories(luau_vm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(luau_vm PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(virtualm-api source/server.cpp)
+target_link_libraries(virtualm-api PRIVATE luau_vm)
+target_compile_options(virtualm-api PRIVATE -Wall -Wextra -Wpedantic)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(virtualm-tests tests/test_vm.cpp)
+  target_link_libraries(virtualm-tests PRIVATE luau_vm)
+  add_test(NAME virtualm-tests COMMAND virtualm-tests)
+endif()
