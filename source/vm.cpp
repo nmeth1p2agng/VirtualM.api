@@ -203,14 +203,6 @@ struct ExecutionState {
     std::size_t steps{};
     std::size_t table_entries{};
     std::size_t call_depth{};
-    std::size_t expression_depth{};
-    std::size_t concat_depth{};
-    std::size_t unary_depth{};
-
-    void check_string_size(std::size_t size, const Token& token) const {
-        if (size > limits.max_string_bytes)
-            throw std::runtime_error("String size limit exceeded at offset " + std::to_string(token.offset));
-    }
 
     void charge(std::size_t amount = 1) {
         if (amount > limits.max_execution_steps - std::min(steps, limits.max_execution_steps))
@@ -220,18 +212,6 @@ struct ExecutionState {
 };
 
 class Parser {
-    class DepthGuard {
-    public:
-        DepthGuard(std::size_t& depth, std::size_t limit, const char* message) : depth_(depth) {
-            if (depth_ >= limit) throw std::runtime_error(message);
-            ++depth_;
-        }
-        ~DepthGuard() { --depth_; }
-        DepthGuard(const DepthGuard&) = delete;
-        DepthGuard& operator=(const DepthGuard&) = delete;
-    private:
-        std::size_t& depth_;
-    };
 public:
     explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables,
                     std::vector<FunctionDef>& functions, ExecutionState& state,
@@ -293,22 +273,8 @@ private:
             if (!ref) fail_at(key_token, "Attempt to index a " + type_name(*variable) + " value");
             if (ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
             const auto encoded = table_key(key, key_token);
-            state_.check_string_size(encoded.size(), key_token);
-            auto& table = tables_[ref->index];
-            const auto existing = table.find(encoded);
-            if (std::holds_alternative<Nil>(assigned)) {
-                if (existing != table.end()) {
-                    table.erase(existing);
-                    if (state_.table_entries > 0) --state_.table_entries;
-                }
-            } else {
-                if (existing == table.end()) {
-                    if (state_.table_entries >= state_.limits.max_table_entries)
-                        fail_at(key_token, "Table entry limit exceeded");
-                    ++state_.table_entries;
-                }
-                table[encoded] = std::move(assigned);
-            }
+            if (std::holds_alternative<Nil>(assigned)) tables_[ref->index].erase(encoded);
+            else tables_[ref->index][encoded] = std::move(assigned);
         } else {
             (void)expression();
         }
@@ -447,11 +413,7 @@ private:
         if (!match_identifier(word)) fail(message);
     }
 private:
-    Value expression() {
-        DepthGuard guard(state_.expression_depth, state_.limits.max_expression_depth,
-                         "Expression nesting limit exceeded");
-        return logical_or();
-    }
+    Value expression() { return logical_or(); }
     Value logical_or() {
         Value left = logical_and();
         while (match_identifier("or")) {
@@ -504,18 +466,11 @@ private:
         return left;
     }
     Value concat() {
-        DepthGuard guard(state_.concat_depth, state_.limits.max_expression_depth,
-                         "Concatenation nesting limit exceeded");
         Value left = term();
         if (match(TokenKind::Concat)) {
             const auto op = previous();
             Value right = concat(); // right-associative, as in Lua/Luau
-            const std::string left_text = stringify_for_concat(left, op);
-            const std::string right_text = stringify_for_concat(right, op);
-            if (right_text.size() > state_.limits.max_string_bytes ||
-                left_text.size() > state_.limits.max_string_bytes - right_text.size())
-                fail_at(op, "String size limit exceeded");
-            left = left_text + right_text;
+            left = stringify_for_concat(left, op) + stringify_for_concat(right, op);
         }
         return left;
     }
@@ -543,8 +498,6 @@ private:
         return left;
     }
     Value unary() {
-        DepthGuard guard(state_.unary_depth, state_.limits.max_expression_depth,
-                         "Unary expression nesting limit exceeded");
         if (match(TokenKind::Minus)) { const auto op = previous(); return -number(unary(), op); }
         if (match_identifier("not")) return !truthy(unary());
         if (match(TokenKind::Hash)) {
@@ -583,9 +536,7 @@ private:
             if (!end || *end != '\0' || !std::isfinite(n)) fail_at(t, "Invalid numeric literal");
             value = n;
         } else if (match(TokenKind::String)) {
-            const auto& token = previous();
-            state_.check_string_size(token.text.size(), token);
-            value = token.text;
+            value = previous().text;
         } else if (match(TokenKind::LeftParen)) {
             value = expression();
             consume(TokenKind::RightParen, "Expected ')' after expression");
@@ -618,7 +569,6 @@ private:
                 }
                 auto& table = tables_[table_index];
                 const auto encoded = table_key(key, key_token);
-                state_.check_string_size(encoded.size(), key_token);
                 const auto existing = table.find(encoded);
                 if (std::holds_alternative<Nil>(item)) {
                     if (existing != table.end()) { table.erase(existing); --state_.table_entries; }
@@ -689,9 +639,7 @@ private:
             const auto* table_ref = std::get_if<TableRef>(&value);
             if (!table_ref) fail_at(key_token, "Attempt to index a " + type_name(value) + " value");
             if (table_ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
-            const auto encoded = table_key(key, key_token);
-            state_.check_string_size(encoded.size(), key_token);
-            const auto it = tables_[table_ref->index].find(encoded);
+            const auto it = tables_[table_ref->index].find(table_key(key, key_token));
             value = it == tables_[table_ref->index].end() ? Value{Nil{}} : it->second;
         }
         return value;
@@ -774,15 +722,32 @@ VM& VM::operator=(VM&&) noexcept = default;
 Result<Value> VM::execute_source(std::string_view source) {
     if (!impl_) return Result<Value>::failure("VM is not initialized");
     if (source.empty()) return Result<Value>::failure("Source code is empty");
+    // Each snippet is transactional: a failed execution must not leave behind
+    // partially-created tables/functions or mutations to existing VM objects.
+    // This prevents repeated failing requests from poisoning persistent state.
+    auto tables_before = impl_->tables;
+    auto functions_before = impl_->functions;
     try {
         ExecutionState state{impl_->options};
         // Recount persistent objects in case the VM has executed earlier snippets.
-        for (const auto& table : impl_->tables) state.table_entries += table.size();
+        for (const auto& table : impl_->tables) {
+            if (table.size() > impl_->options.max_table_entries -
+                    std::min(state.table_entries, impl_->options.max_table_entries)) {
+                return Result<Value>::failure("Persistent table entry limit exceeded");
+            }
+            state.table_entries += table.size();
+        }
         Lexer lexer(source);
         Parser parser(lexer.scan(), impl_->tables, impl_->functions, state);
         return Result<Value>::success(parser.run());
     } catch (const std::exception& e) {
+        impl_->tables = std::move(tables_before);
+        impl_->functions = std::move(functions_before);
         return Result<Value>::failure(e.what());
+    } catch (...) {
+        impl_->tables = std::move(tables_before);
+        impl_->functions = std::move(functions_before);
+        return Result<Value>::failure("Unknown runtime failure");
     }
 }
 
