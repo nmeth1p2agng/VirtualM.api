@@ -243,6 +243,19 @@ int main() {
     assert(!too_many_entries);
     assert(too_many_entries.error().find("Table entry limit") != std::string::npos);
 
+    // Deep recursive expressions are rejected before exhausting the native stack.
+    luau_vm::VMOptions expression_limits;
+    expression_limits.max_expression_depth = 16;
+    luau_vm::VM guarded_expression_vm(expression_limits);
+    const auto too_deep_unary = guarded_expression_vm.execute_source(
+        "return not not not not not not not not not not not not not not not not not true");
+    assert(!too_deep_unary);
+    assert(too_deep_unary.error().find("Unary expression nesting limit") != std::string::npos);
+
+    const auto too_deep_concat = guarded_expression_vm.execute_source(
+        "return 'a'..'b'..'c'..'d'..'e'..'f'..'g'..'h'..'i'..'j'..'k'..'l'..'m'..'n'..'o'..'p'..'q'..'r'");
+    assert(!too_deep_concat);
+    assert(too_deep_concat.error().find("Concatenation nesting limit") != std::string::npos);
 
     return 0;
 }
