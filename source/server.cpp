@@ -336,10 +336,10 @@ void handle_client(int client) {
 
     try {
         if (obfuscate_route) {
-            const std::string output = luau_vm::minify_lua_source(source);
+            const std::string output = luau_vm::obfuscate_lua_source(source);
             send_response(client, 200, "OK",
                 "{\"ok\":true,\"output\":\"" + json_escape(output) +
-                "\",\"mode\":\"minified\",\"note\":\"Comments and unnecessary whitespace removed; identifiers are unchanged.\"}");
+                "\",\"mode\":\"conservative-renaming\",\"note\":\"Comments and unnecessary whitespace removed. Simple top-level local identifiers are renamed; unsupported complex syntax is only minified.\"}");
             return;
         }
 
