@@ -1,4 +1,5 @@
 #include "luau_vm/vm.hpp"
+#include "luau_vm/bytecode.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -188,6 +189,36 @@ int main() {
     const auto logical_truthiness = vm.execute_source("return 0 or 5");
     assert(logical_truthiness);
     assert(std::get<double>(logical_truthiness.value()) == 0.0);
+
+    // Bytecode verifier: valid linear program and invalid operands/control flow.
+    using luau_vm::BytecodeChunk;
+    using luau_vm::Instruction;
+    using luau_vm::OpCode;
+    BytecodeChunk valid_chunk;
+    valid_chunk.constant_count = 1;
+    valid_chunk.instructions = {{OpCode::LoadConstant, 0}, {OpCode::Return, 0}};
+    const auto verified = luau_vm::verify_bytecode(valid_chunk);
+    assert(verified.valid);
+    assert(verified.max_stack == 1);
+
+    BytecodeChunk bad_constant;
+    bad_constant.constant_count = 1;
+    bad_constant.instructions = {{OpCode::LoadConstant, 2}, {OpCode::Return, 0}};
+    assert(!luau_vm::verify_bytecode(bad_constant).valid);
+
+    BytecodeChunk underflow;
+    underflow.instructions = {{OpCode::Add, 0}, {OpCode::Return, 0}};
+    assert(!luau_vm::verify_bytecode(underflow).valid);
+
+    BytecodeChunk bad_jump;
+    bad_jump.instructions = {{OpCode::Jump, 8}, {OpCode::Return, 0}};
+    assert(!luau_vm::verify_bytecode(bad_jump).valid);
+
+    BytecodeChunk branch;
+    branch.instructions = {{OpCode::LoadBoolean, 1}, {OpCode::JumpIfFalse, 4},
+                           {OpCode::LoadNil, 0}, {OpCode::Jump, 5},
+                           {OpCode::LoadNil, 0}, {OpCode::Return, 0}};
+    assert(luau_vm::verify_bytecode(branch).valid);
 
     return 0;
 }
