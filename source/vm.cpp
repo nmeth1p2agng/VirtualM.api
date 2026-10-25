@@ -228,6 +228,7 @@ public:
 
     Value run() {
         while (!check(TokenKind::End) && !returned_) {
+            state_.charge();
             if (match_identifier("if")) {
                 execute_if();
             } else if (match_identifier("while")) {
@@ -307,6 +308,7 @@ private:
         current_ = begin;
         try {
             while (current_ < end && !returned_) {
+                state_.charge();
                 if (match_identifier("if")) execute_if();
                 else if (match_identifier("while")) execute_while();
                 else statement();
@@ -419,7 +421,11 @@ private:
         if (!match_identifier(word)) fail(message);
     }
 private:
-    Value expression() { return logical_or(); }
+    Value expression() {
+        // Count expression evaluation as interpreter work, not just loop iterations.
+        state_.charge();
+        return logical_or();
+    }
     Value logical_or() {
         Value left = logical_and();
         while (match_identifier("or")) {
