@@ -221,7 +221,7 @@ public:
     }
 
     Value run() {
-        while (!check(TokenKind::End) && !returned_) {
+        while (!check(TokenKind::End) && !returned_ && !broken_) {
             if (match_identifier("if")) {
                 execute_if();
             } else if (match_identifier("while")) {
@@ -249,6 +249,9 @@ private:
             if (check(TokenKind::End) || check(TokenKind::Semicolon) || is_block_terminator()) return_value_ = Nil{};
             else return_value_ = expression();
             returned_ = true;
+        } else if (match_identifier("break")) {
+            if (loop_depth_ == 0) fail("'break' used outside a loop");
+            broken_ = true;
         } else if (check(TokenKind::Identifier) && check_next(TokenKind::Equal)) {
             const auto name = advance().text; advance();
             auto* slot = find_variable(name);
@@ -302,7 +305,7 @@ private:
         scopes_.emplace_back();
         current_ = begin;
         try {
-            while (current_ < end && !returned_) {
+            while (current_ < end && !returned_ && !broken_) {
                 if (match_identifier("if")) execute_if();
                 else if (match_identifier("while")) execute_while();
                 else if (match_identifier("for")) execute_for();
@@ -369,7 +372,7 @@ private:
         const auto body_start = current_;
         const auto block_end = find_block_end(body_start);
         std::size_t iterations = 0;
-        while (!returned_) {
+        while (!returned_ && !broken_) {
             const auto saved = current_;
             current_ = condition_start;
             Value condition = expression();
@@ -378,8 +381,12 @@ private:
             if (++iterations > state_.limits.max_execution_steps)
                 fail_at(tokens_[condition_start], "Loop iteration limit exceeded");
             state_.charge();
-            execute_range(body_start, block_end);
+            ++loop_depth_;
+            try { execute_range(body_start, block_end); }
+            catch (...) { --loop_depth_; throw; }
+            --loop_depth_;
         }
+        if (broken_) broken_ = false;
         current_ = block_end;
         consume_identifier("end", "Expected 'end' after while block");
         (void)condition_end;
@@ -408,14 +415,19 @@ private:
             double value = first;
             std::size_t iterations = 0;
             const auto in_range = [&]() { return step > 0.0 ? value <= limit : value >= limit; };
-            while (in_range() && !returned_) {
+            while (in_range() && !returned_ && !broken_) {
                 if (++iterations > state_.limits.max_execution_steps)
                     fail_at(variable, "Loop iteration limit exceeded");
                 state_.charge();
                 scopes_.back()[variable.text] = value;
-                execute_range(body_start, block_end);
+                ++loop_depth_;
+                try { execute_range(body_start, block_end); }
+                catch (...) { --loop_depth_; throw; }
+                --loop_depth_;
+                if (broken_) break;
                 value += step;
             }
+            if (broken_) broken_ = false;
         } catch (...) {
             scopes_.pop_back();
             throw;
@@ -747,6 +759,8 @@ private:
     ExecutionState& state_;
     Value return_value_{Nil{}};
     bool returned_{};
+    bool broken_{};
+    std::size_t loop_depth_{};
 };
 } // namespace
 
