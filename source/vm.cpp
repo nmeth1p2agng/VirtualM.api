@@ -30,7 +30,8 @@ struct Token {
 
 class Lexer {
 public:
-    explicit Lexer(std::string_view source) : source_(source) {}
+    explicit Lexer(std::string_view source, std::size_t max_tokens)
+        : source_(source), max_tokens_(max_tokens) {}
 
     std::vector<Token> scan() {
         std::vector<Token> tokens;
@@ -50,7 +51,7 @@ public:
             if (is_alpha(c) || c == '_') {
                 ++pos_;
                 while (pos_ < source_.size() && (is_alpha(source_[pos_]) || is_digit(source_[pos_]) || source_[pos_] == '_')) ++pos_;
-                tokens.push_back({TokenKind::Identifier, std::string(source_.substr(start, pos_ - start)), start});
+                push_token(tokens, {TokenKind::Identifier, std::string(source_.substr(start, pos_ - start)), start});
                 continue;
             }
             if (c == '\'' || c == '"') {
@@ -73,7 +74,7 @@ public:
                     } else value.push_back(ch);
                 }
                 if (!closed) throw std::runtime_error("Unterminated string at offset " + std::to_string(start));
-                tokens.push_back({TokenKind::String, std::move(value), start});
+                push_token(tokens, {TokenKind::String, std::move(value), start});
                 continue;
             }
             switch (c) {
@@ -81,7 +82,7 @@ public:
                 case '-': simple(tokens, TokenKind::Minus, start); break;
                 case '*': simple(tokens, TokenKind::Star, start); break;
                 case '/':
-                    if (peek(1) == '/') { pos_ += 2; tokens.push_back({TokenKind::FloorSlash, "//", start}); }
+                    if (peek(1) == '/') { pos_ += 2; push_token(tokens, {TokenKind::FloorSlash, "//", start}); }
                     else simple(tokens, TokenKind::Slash, start);
                     break;
                 case '%': simple(tokens, TokenKind::Percent, start); break;
@@ -96,12 +97,12 @@ public:
                 case ';': simple(tokens, TokenKind::Semicolon, start); break;
                 case ',': simple(tokens, TokenKind::Comma, start); break;
                 case '.':
-                    if (peek(1) == '.') { pos_ += 2; tokens.push_back({TokenKind::Concat, "..", start}); }
+                    if (peek(1) == '.') { pos_ += 2; push_token(tokens, {TokenKind::Concat, "..", start}); }
                     else simple(tokens, TokenKind::Dot, start);
                     break;
                 case '=': two(tokens, '=', TokenKind::EqualEqual, TokenKind::Equal, start); break;
                 case '~':
-                    if (peek(1) == '=') { pos_ += 2; tokens.push_back({TokenKind::NotEqual, "~=", start}); }
+                    if (peek(1) == '=') { pos_ += 2; push_token(tokens, {TokenKind::NotEqual, "~=", start}); }
                     else throw std::runtime_error("Unexpected '~' at offset " + std::to_string(start));
                     break;
                 case '<': two(tokens, '=', TokenKind::LessEqual, TokenKind::Less, start); break;
@@ -109,21 +110,25 @@ public:
                 default: throw std::runtime_error("Unexpected character at offset " + std::to_string(start));
             }
         }
-        tokens.push_back({TokenKind::End, "", source_.size()});
+        push_token(tokens, {TokenKind::End, "", source_.size()});
         return tokens;
     }
 private:
+    void push_token(std::vector<Token>& out, Token token) {
+        if (out.size() >= max_tokens_) throw std::runtime_error("Token limit exceeded");
+        out.push_back(std::move(token));
+    }
     static bool is_digit(char c) { return c >= '0' && c <= '9'; }
     static bool is_alpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
     char peek(std::size_t ahead) const { return pos_ + ahead < source_.size() ? source_[pos_ + ahead] : '\0'; }
     void simple(std::vector<Token>& out, TokenKind kind, std::size_t start) {
-        out.push_back({kind, std::string(1, source_[pos_]), start}); ++pos_;
+        push_token(out, {kind, std::string(1, source_[pos_]), start}); ++pos_;
     }
     void two(std::vector<Token>& out, char expected, TokenKind yes, TokenKind no, std::size_t start) {
         const char first = source_[pos_++];
         if (pos_ < source_.size() && source_[pos_] == expected) {
-            ++pos_; out.push_back({yes, std::string(source_.substr(start, 2)), start});
-        } else out.push_back({no, std::string(1, first), start});
+            ++pos_; push_token(out, {yes, std::string(source_.substr(start, 2)), start});
+        } else push_token(out, {no, std::string(1, first), start});
     }
     void scan_number(std::vector<Token>& out, std::size_t start) {
         bool saw_dot = false;
@@ -139,9 +144,10 @@ private:
             if (!is_digit(peek(0))) throw std::runtime_error("Invalid exponent at offset " + std::to_string(exponent_start));
             while (is_digit(peek(0))) ++pos_;
         }
-        out.push_back({TokenKind::Number, std::string(source_.substr(start, pos_ - start)), start});
+        push_token(out, {TokenKind::Number, std::string(source_.substr(start, pos_ - start)), start});
     }
     std::string_view source_;
+    std::size_t max_tokens_;
     std::size_t pos_{};
 };
 
@@ -737,11 +743,8 @@ Result<Value> VM::execute_source(std::string_view source) {
             }
             state.table_entries += table.size();
         }
-        Lexer lexer(source);
+        Lexer lexer(source, impl_->options.max_tokens);
         auto tokens = lexer.scan();
-        if (tokens.size() > impl_->options.max_tokens) {
-            return Result<Value>::failure("Token limit exceeded");
-        }
         Parser parser(std::move(tokens), impl_->tables, impl_->functions, state);
         return Result<Value>::success(parser.run());
     } catch (const std::exception& e) {
