@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
+
+#include "luau_vm/result.hpp"
+#include "luau_vm/value.hpp"
 
 namespace luau_vm {
 
@@ -42,6 +46,7 @@ struct Instruction {
 struct BytecodeChunk {
     std::vector<Instruction> instructions;
     std::size_t constant_count{0};
+    // LoadBoolean reads operand 0 as false and 1 as true.
     std::size_t local_count{0};
 };
 
@@ -53,5 +58,12 @@ struct BytecodeVerification {
 
 // Validates operand indexes, jump targets, and stack balance on every reachable path.
 [[nodiscard]] BytecodeVerification verify_bytecode(const BytecodeChunk& chunk);
+
+// Executes verified scalar bytecode. Tables are intentionally rejected until the
+// bytecode engine is connected to the VM's managed table store.
+[[nodiscard]] Result<Value> execute_bytecode(
+    const BytecodeChunk& chunk,
+    const std::vector<Value>& constants,
+    std::size_t max_steps = 1'000'000);
 
 } // namespace luau_vm
