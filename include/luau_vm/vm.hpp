@@ -17,6 +17,8 @@ struct VMOptions {
     std::size_t max_table_entries{100'000};
     std::size_t max_functions{10'000};
     std::size_t max_call_depth{128};
+    // Bounds recursive parser paths so hostile expressions cannot exhaust the C++ stack.
+    std::size_t max_expression_depth{256};
 };
 
 class VM {
