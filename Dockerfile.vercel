@@ -1,14 +1,22 @@
 FROM debian:bookworm-slim AS build
-RUN apt-get update && apt-get install -y --no-install-recommends g++ cmake make ca-certificates && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ cmake make ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY . .
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-    && cmake --build build --target virtualm-api --parallel 2
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates && rm -rf /var/lib/apt/lists/*
+# Normalize source files that were committed with an extra .txt suffix.
+RUN if [ ! -f CMakeLists.txt ] && [ -f CMakeLists.txt.txt ]; then mv CMakeLists.txt.txt CMakeLists.txt; fi \
+    && find . -type f -name '*.cpp.txt' -exec sh -c 'mv "$1" "${1%.txt}"' _ {} \; \
+    && find . -type f -name '*.hpp.txt' -exec sh -c 'mv "$1" "${1%.txt}"' _ {} \; \
+    && find . -type f -name '*.h.txt' -exec sh -c 'mv "$1" "${1%.txt}"' _ {} \; \
+    && test -f CMakeLists.txt
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && cmake --build build --parallel 2
+
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
-COPY --from=build /app/build/virtualm-api /app/virtualm-api
-ENV PORT=80
-EXPOSE 80
-CMD ["/app/virtualm-api"]
+COPY --from=build /app/build /app/build
