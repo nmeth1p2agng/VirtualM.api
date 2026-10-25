@@ -14,7 +14,7 @@ namespace {
 
 enum class TokenKind {
     End, Number, String, Identifier,
-    Plus, Minus, Star, Slash, Percent, Caret,
+    Plus, Minus, Star, Slash, Percent, Caret, Concat,
     LeftParen, RightParen, Semicolon, Comma,
     Equal, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual
 };
@@ -40,9 +40,28 @@ public:
                 continue;
             }
             const auto start = pos_;
-            if (is_digit(c)) {
-                ++pos_;
-                while (pos_ < source_.size() && (is_digit(source_[pos_]) || source_[pos_] == '.')) ++pos_;
+            if (is_digit(c) || (c == '.' && is_digit(peek(1)))) {
+                if (c == '.') {
+                    ++pos_;
+                    while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
+                } else {
+                    while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
+                    // A dot begins a decimal fraction only when it is not the
+                    // first character of Luau's concatenation operator "..".
+                    if (pos_ < source_.size() && source_[pos_] == '.' && peek(1) != '.') {
+                        ++pos_;
+                        while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
+                    }
+                }
+                if (pos_ < source_.size() && (source_[pos_] == 'e' || source_[pos_] == 'E')) {
+                    const std::size_t exponent_start = pos_++;
+                    if (pos_ < source_.size() && (source_[pos_] == '+' || source_[pos_] == '-')) ++pos_;
+                    const std::size_t digits_start = pos_;
+                    while (pos_ < source_.size() && is_digit(source_[pos_])) ++pos_;
+                    if (digits_start == pos_) {
+                        throw std::runtime_error("Invalid exponent at offset " + std::to_string(exponent_start));
+                    }
+                }
                 tokens.push_back({TokenKind::Number, std::string(source_.substr(start, pos_ - start)), start});
                 continue;
             }
@@ -89,6 +108,14 @@ public:
                 case '/': ++pos_; tokens.push_back({TokenKind::Slash, "/", start}); break;
                 case '%': ++pos_; tokens.push_back({TokenKind::Percent, "%", start}); break;
                 case '^': ++pos_; tokens.push_back({TokenKind::Caret, "^", start}); break;
+                case '.':
+                    if (peek(1) == '.') {
+                        pos_ += 2;
+                        tokens.push_back({TokenKind::Concat, "..", start});
+                    } else {
+                        throw std::runtime_error("Unexpected '.' at offset " + std::to_string(start));
+                    }
+                    break;
                 case '(': ++pos_; tokens.push_back({TokenKind::LeftParen, "(", start}); break;
                 case ')': ++pos_; tokens.push_back({TokenKind::RightParen, ")", start}); break;
                 case ';': ++pos_; tokens.push_back({TokenKind::Semicolon, ";", start}); break;
@@ -183,9 +210,9 @@ private:
         return left;
     }
     Value comparison() {
-        Value left = term();
+        Value left = concatenation();
         while (match(TokenKind::Less) || match(TokenKind::LessEqual) || match(TokenKind::Greater) || match(TokenKind::GreaterEqual)) {
-            const auto op = previous(); Value right = term();
+            const auto op = previous(); Value right = concatenation();
             if (std::holds_alternative<std::string>(left) && std::holds_alternative<std::string>(right)) {
                 const auto& a = std::get<std::string>(left); const auto& b = std::get<std::string>(right);
                 if (op.kind == TokenKind::Less) left = a < b;
@@ -199,6 +226,22 @@ private:
                 else if (op.kind == TokenKind::Greater) left = a > b;
                 else left = a >= b;
             }
+        }
+        return left;
+    }
+    Value concatenation() {
+        Value left = term();
+        if (match(TokenKind::Concat)) {
+            const auto op = previous();
+            Value right = concatenation(); // Luau concatenation is right-associative.
+            const auto* lhs = std::get_if<std::string>(&left);
+            const auto* rhs = std::get_if<std::string>(&right);
+            if (!lhs || !rhs) {
+                throw std::runtime_error(
+                    "Concatenation currently requires string operands at offset " +
+                    std::to_string(op.offset));
+            }
+            return *lhs + *rhs;
         }
         return left;
     }
@@ -216,9 +259,9 @@ private:
         return left;
     }
     Value factor() {
-        Value left = power();
+        Value left = unary();
         while (match(TokenKind::Star) || match(TokenKind::Slash) || match(TokenKind::Percent)) {
-            const auto op = previous(); Value right = power();
+            const auto op = previous(); Value right = unary();
             const double a = number(left, op), b = number(right, op);
             if (op.kind == TokenKind::Star) left = a * b;
             else if (op.kind == TokenKind::Slash) left = a / b;
@@ -227,14 +270,22 @@ private:
         return left;
     }
     Value power() {
-        Value left = unary();
-        if (match(TokenKind::Caret)) { const auto op = previous(); left = std::pow(number(left, op), number(power(), op)); }
+        Value left = primary();
+        if (match(TokenKind::Caret)) {
+            const auto op = previous();
+            // Parsing the right operand as unary preserves right associativity
+            // and allows expressions such as 2 ^ -2.
+            left = std::pow(number(left, op), number(unary(), op));
+        }
         return left;
     }
     Value unary() {
-        if (match(TokenKind::Minus)) { const auto op = previous(); return -number(unary(), op); }
+        if (match(TokenKind::Minus)) {
+            const auto op = previous();
+            return -number(unary(), op);
+        }
         if (match_identifier("not")) return !truthy(unary());
-        return primary();
+        return power();
     }
     Value primary() {
         if (match(TokenKind::Number)) {
