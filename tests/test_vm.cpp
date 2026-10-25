@@ -91,5 +91,26 @@ int main() {
     const auto invalid_table_index = vm.execute_source("return 5.x");
     assert(!invalid_table_index);
 
+    const auto if_true = vm.execute_source("local x = 0; if 2 > 1 then x = 10 end; return x");
+    assert(if_true);
+    assert(std::get<double>(if_true.value()) == 10.0);
+
+    const auto if_else = vm.execute_source("local x = 0; if false then x = 1 else x = 2 end; return x");
+    assert(if_else);
+    assert(std::get<double>(if_else.value()) == 2.0);
+
+    const auto if_elseif = vm.execute_source("local x = 0; if false then x = 1 elseif 3 > 2 then x = 7 else x = 9 end; return x");
+    assert(if_elseif);
+    assert(std::get<double>(if_elseif.value()) == 7.0);
+
+    const auto while_loop = vm.execute_source("local i = 0; local total = 0; while i < 5 do i = i + 1; total = total + i end; return total");
+    assert(while_loop);
+    assert(std::get<double>(while_loop.value()) == 15.0);
+
+    const auto nested_control = vm.execute_source("local x = 0; while x < 3 do if x < 2 then x = x + 1 else x = x + 1 end end; return x");
+    assert(nested_control);
+    assert(std::get<double>(nested_control.value()) == 3.0);
+
+
     return 0;
 }
