@@ -17,7 +17,7 @@ enum class TokenKind {
     End, Number, String, Identifier,
     Plus, Minus, Star, Slash, Percent, Caret, Concat,
     LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
-    Dot, Semicolon, Comma,
+    Dot, Semicolon, Comma, Hash,
     Equal, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual
 };
 
@@ -82,6 +82,7 @@ public:
                 case '/': simple(tokens, TokenKind::Slash, start); break;
                 case '%': simple(tokens, TokenKind::Percent, start); break;
                 case '^': simple(tokens, TokenKind::Caret, start); break;
+                case '#': simple(tokens, TokenKind::Hash, start); break;
                 case '(': simple(tokens, TokenKind::LeftParen, start); break;
                 case ')': simple(tokens, TokenKind::RightParen, start); break;
                 case '{': simple(tokens, TokenKind::LeftBrace, start); break;
@@ -459,6 +460,27 @@ private:
     Value unary() {
         if (match(TokenKind::Minus)) { const auto op = previous(); return -number(unary(), op); }
         if (match_identifier("not")) return !truthy(unary());
+        if (match(TokenKind::Hash)) {
+            const auto op = previous();
+            Value operand = unary();
+            if (const auto* text = std::get_if<std::string>(&operand))
+                return static_cast<double>(text->size());
+            if (const auto* ref = std::get_if<TableRef>(&operand)) {
+                if (ref->index >= tables_.size()) fail_at(op, "Invalid table reference");
+                const auto& table = tables_[ref->index];
+                std::size_t length = 0;
+                for (;;) {
+                    const double next = static_cast<double>(length + 1);
+                    std::ostringstream encoded;
+                    encoded << "n:" << std::setprecision(17) << next;
+                    const auto it = table.find(encoded.str());
+                    if (it == table.end() || std::holds_alternative<Nil>(it->second)) break;
+                    ++length;
+                }
+                return static_cast<double>(length);
+            }
+            fail_at(op, "Length operator expects a string or table, got " + type_name(operand));
+        }
         return power();
     }
     Value power() {
