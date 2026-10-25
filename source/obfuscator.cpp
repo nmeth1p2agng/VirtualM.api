@@ -33,14 +33,32 @@ std::size_t find_long_close(std::string_view s, std::size_t from, std::size_t eq
     return s.size();
 }
 
-bool needs_separator(char left, char right) {
+bool needs_separator(std::string_view output, char right) {
+    if (output.empty()) return false;
+    const char left = output.back();
     const auto a = static_cast<unsigned char>(left);
     const auto b = static_cast<unsigned char>(right);
     if (is_word(a) && is_word(b)) return true;
+
+    // Keep whitespace whenever removing it could create a different Luau token.
+    // This includes comparison/shift/concat operators, comments, type annotations,
+    // and compound assignments. Check three-character tokens before two-character
+    // tokens because Luau's lexer uses longest-match tokenization.
+    if (output.size() >= 2) {
+        const std::string tri{output[output.size() - 2], left, right};
+        if (tri == "..." || tri == "..=" || tri == "//=" || tri == "<<=" || tri == ">>=")
+            return true;
+    }
     const std::string pair{left, right};
-    return pair == "--" || pair == ".." || pair == "//" || pair == "==" ||
-           pair == "~=" || pair == "<=" || pair == ">=" || pair == "::" ||
-           pair == "<<" || pair == ">>";
+    static constexpr std::string_view operators[] = {
+        "--", "..", "//", "==", "~=", "<=", ">=", "::", "<<", ">>",
+        "+=", "-=", "*=", "/=", "%=", "^=", "->"
+    };
+    for (const auto op : operators) if (pair == op) return true;
+    // A digit followed by a dot (or vice versa) can alter numeric tokenization;
+    // preserve the original boundary rather than guessing at the literal grammar.
+    if ((std::isdigit(a) && right == '.') || (left == '.' && std::isdigit(b))) return true;
+    return false;
 }
 
 struct Token { std::size_t begin; std::size_t end; bool identifier; };
@@ -109,7 +127,7 @@ std::string minify_lua_source(std::string_view source) {
     std::size_t i = 0;
     bool pending_space = false;
     auto emit = [&](char c) {
-        if (pending_space && !out.empty() && needs_separator(out.back(), c)) out.push_back(' ');
+        if (pending_space && !out.empty() && needs_separator(out, c)) out.push_back(' ');
         pending_space = false;
         out.push_back(c);
     };
