@@ -82,7 +82,7 @@ private:
         }
         if (c == '(') { ++pos_; current_ = {Kind::LParen, "("}; return; }
         if (c == ')') { ++pos_; current_ = {Kind::RParen, ")"}; return; }
-        for (const char* op : {"//", "..", "==", "<=", "~=", "+", "-", "*", "/", "%", "^", "<"}) {
+        for (const char* op : {"//", "..", "==", "<=", ">=", "~=", "+", "-", "*", "/", "%", "^", "<", ">"}) {
             const std::string_view candidate(op);
             if (source_.substr(pos_, candidate.size()) == candidate) { current_ = {Kind::Op, std::string(candidate)}; pos_ += candidate.size(); return; }
         }
@@ -139,6 +139,8 @@ private:
             else if (op.text == "==") code = OpCode::Equal;
             else if (op.text == "<") code = OpCode::LessThan;
             else if (op.text == "<=") code = OpCode::LessEqual;
+            else if (op.text == ">") code = OpCode::GreaterThan;
+            else if (op.text == ">=") code = OpCode::GreaterEqual;
             else if (op.text == "~=") { chunk_.instructions.push_back({OpCode::Equal, 0}); chunk_.instructions.push_back({OpCode::LogicalNot, 0}); continue; }
             else return set_error("operator '" + op.text + "' is not supported by this bytecode subset yet");
             chunk_.instructions.push_back({code, 0});
