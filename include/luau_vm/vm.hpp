@@ -19,6 +19,8 @@ struct VMOptions {
     std::size_t max_call_depth{128};
     // Bounds recursive parser paths so hostile expressions cannot exhaust the C++ stack.
     std::size_t max_expression_depth{256};
+    // Caps individual runtime strings and concatenation results, not source size.
+    std::size_t max_string_bytes{1'048'576};
 };
 
 class VM {
