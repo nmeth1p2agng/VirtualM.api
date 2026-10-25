@@ -15,7 +15,7 @@ namespace {
 
 enum class TokenKind {
     End, Number, String, Identifier,
-    Plus, Minus, Star, Slash, Percent, Caret, Concat,
+    Plus, Minus, Star, Slash, FloorSlash, Percent, Caret, Concat,
     LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
     Dot, Semicolon, Comma, Hash,
     Equal, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual
@@ -79,7 +79,10 @@ public:
                 case '+': simple(tokens, TokenKind::Plus, start); break;
                 case '-': simple(tokens, TokenKind::Minus, start); break;
                 case '*': simple(tokens, TokenKind::Star, start); break;
-                case '/': simple(tokens, TokenKind::Slash, start); break;
+                case '/':
+                    if (peek(1) == '/') { pos_ += 2; tokens.push_back({TokenKind::FloorSlash, "//", start}); }
+                    else simple(tokens, TokenKind::Slash, start);
+                    break;
                 case '%': simple(tokens, TokenKind::Percent, start); break;
                 case '^': simple(tokens, TokenKind::Caret, start); break;
                 case '#': simple(tokens, TokenKind::Hash, start); break;
@@ -390,7 +393,23 @@ private:
         if (!match_identifier(word)) fail(message);
     }
 private:
-    Value expression() { return equality(); }
+    Value expression() { return logical_or(); }
+    Value logical_or() {
+        Value left = logical_and();
+        while (match_identifier("or")) {
+            Value right = logical_and();
+            left = truthy(left) ? left : right;
+        }
+        return left;
+    }
+    Value logical_and() {
+        Value left = equality();
+        while (match_identifier("and")) {
+            Value right = equality();
+            left = truthy(left) ? right : left;
+        }
+        return left;
+    }
     Value equality() {
         Value left = comparison();
         while (match(TokenKind::EqualEqual) || match(TokenKind::NotEqual)) {
@@ -448,11 +467,12 @@ private:
     }
     Value factor() {
         Value left = unary();
-        while (match(TokenKind::Star) || match(TokenKind::Slash) || match(TokenKind::Percent)) {
+        while (match(TokenKind::Star) || match(TokenKind::Slash) || match(TokenKind::FloorSlash) || match(TokenKind::Percent)) {
             const auto op = previous(); Value right = unary();
             const double a = number(left, op), b = number(right, op);
             if (op.kind == TokenKind::Star) left = a * b;
             else if (op.kind == TokenKind::Slash) left = a / b;
+            else if (op.kind == TokenKind::FloorSlash) left = std::floor(a / b);
             else left = std::fmod(a, b);
         }
         return left;
