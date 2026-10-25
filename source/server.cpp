@@ -1,4 +1,5 @@
 #include "luau_vm/vm.hpp"
+#include "luau_vm/obfuscator.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -312,10 +313,12 @@ void handle_client(int client) {
         send_response(client, 200, "OK", "{\"status\":\"ok\",\"engine\":\"VirtualM.api\",\"mode\":\"experimental-subset\",\"maxSourceBytes\":262144}"); return;
     }
     if (method == "GET" && path == "/api/info") {
-        send_response(client, 200, "OK", "{\"name\":\"VirtualM.api\",\"version\":\"0.6.0\",\"routes\":[\"GET /health\",\"GET /api/info\",\"POST /api/execute\"],\"sourceLimitBytes\":262144,\"languageSupport\":\"experimental subset; not full Luau compatibility\"}"); return;
+        send_response(client, 200, "OK", "{\"name\":\"VirtualM.api\",\"version\":\"0.7.0\",\"routes\":[\"GET /health\",\"GET /api/info\",\"POST /api/execute\",\"POST /api/obfuscate\"],\"sourceLimitBytes\":262144,\"languageSupport\":\"experimental subset; not full Luau compatibility\",\"obfuscation\":\"comment and whitespace minification; not identifier renaming\"}"); return;
     }
-    if (method != "POST" || (path != "/api/execute" && path != "/execute")) {
-        send_response(client, 404, "Not Found", "{\"error\":\"Route not found\",\"routes\":[\"GET /health\",\"GET /api/info\",\"POST /api/execute\"]}"); return;
+    const bool execute_route = path == "/api/execute" || path == "/execute";
+    const bool obfuscate_route = path == "/api/obfuscate";
+    if (method != "POST" || (!execute_route && !obfuscate_route)) {
+        send_response(client, 404, "Not Found", "{\"error\":\"Route not found\",\"routes\":[\"GET /health\",\"GET /api/info\",\"POST /api/execute\",\"POST /api/obfuscate\"]}"); return;
     }
 
     const auto header_text = request.substr(0, header_end);
@@ -332,6 +335,14 @@ void handle_client(int client) {
     if (source.size() > kMaxBody) { send_response(client, 413, "Payload Too Large", "{\"error\":\"Source exceeds 256 KiB\"}"); return; }
 
     try {
+        if (obfuscate_route) {
+            const std::string output = luau_vm::minify_lua_source(source);
+            send_response(client, 200, "OK",
+                "{\"ok\":true,\"output\":\"" + json_escape(output) +
+                "\",\"mode\":\"minified\",\"note\":\"Comments and unnecessary whitespace removed; identifiers are unchanged.\"}");
+            return;
+        }
+
         luau_vm::VM vm;
         const auto result = vm.execute_source(source);
         if (!result) {
