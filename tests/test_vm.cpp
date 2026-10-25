@@ -88,6 +88,22 @@ int main() {
     assert(missing_table_key);
     assert(std::holds_alternative<Nil>(missing_table_key.value()));
 
+    const auto table_length = vm.execute_source("local items = {10, 20, 30}; return #items");
+    assert(table_length);
+    assert(std::get<double>(table_length.value()) == 3.0);
+
+    const auto string_length = vm.execute_source("return #'VirtualM'");
+    assert(string_length);
+    assert(std::get<double>(string_length.value()) == 8.0);
+
+    const auto sparse_table_length = vm.execute_source("local items = {[1] = 'a', [2] = 'b', [4] = 'd'}; return #items");
+    assert(sparse_table_length);
+    assert(std::get<double>(sparse_table_length.value()) == 2.0);
+
+    const auto invalid_length = vm.execute_source("return #42");
+    assert(!invalid_length);
+    assert(invalid_length.error().find("Length operator") != std::string::npos);
+
     const auto invalid_table_index = vm.execute_source("return 5.x");
     assert(!invalid_table_index);
 
@@ -148,6 +164,30 @@ int main() {
     assert(!while_local_does_not_escape);
     assert(while_local_does_not_escape.error().find("Unknown variable") != std::string::npos);
 
+
+    const auto floor_division = vm.execute_source("return 7 // 2");
+    assert(floor_division);
+    assert(std::get<double>(floor_division.value()) == 3.0);
+
+    const auto floor_division_negative = vm.execute_source("return -7 // 2");
+    assert(floor_division_negative);
+    assert(std::get<double>(floor_division_negative.value()) == -4.0);
+
+    const auto logical_and = vm.execute_source("return true and 12");
+    assert(logical_and);
+    assert(std::get<double>(logical_and.value()) == 12.0);
+
+    const auto logical_or = vm.execute_source("return false or 'fallback'");
+    assert(logical_or);
+    assert(std::get<std::string>(logical_or.value()) == "fallback");
+
+    const auto logical_precedence = vm.execute_source("return false or true and 9");
+    assert(logical_precedence);
+    assert(std::get<double>(logical_precedence.value()) == 9.0);
+
+    const auto logical_truthiness = vm.execute_source("return 0 or 5");
+    assert(logical_truthiness);
+    assert(std::get<double>(logical_truthiness.value()) == 0.0);
 
     return 0;
 }
