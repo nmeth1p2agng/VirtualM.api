@@ -22,7 +22,8 @@ Effect stack_effect(OpCode op) {
         case OpCode::Add: case OpCode::Subtract: case OpCode::Multiply:
         case OpCode::Divide: case OpCode::FloorDivide: case OpCode::Modulo:
         case OpCode::Power: case OpCode::Equal: case OpCode::LessThan:
-        case OpCode::LessEqual: case OpCode::Concatenate: case OpCode::GetTable:
+        case OpCode::LessEqual: case OpCode::GreaterThan: case OpCode::GreaterEqual:
+        case OpCode::Concatenate: case OpCode::GetTable:
             return {2, 1};
         case OpCode::SetTable: return {3, 0};
         case OpCode::Pop: return {1, 0};
@@ -164,7 +165,8 @@ Result<Value> execute_bytecode(const BytecodeChunk& chunk,
             case OpCode::LogicalNot: { auto v = truthy(stack.back()); stack.back() = !v; break; }
             case OpCode::Add: case OpCode::Subtract: case OpCode::Multiply:
             case OpCode::Divide: case OpCode::FloorDivide: case OpCode::Modulo:
-            case OpCode::Power: case OpCode::LessThan: case OpCode::LessEqual: {
+            case OpCode::Power: case OpCode::LessThan: case OpCode::LessEqual:
+            case OpCode::GreaterThan: case OpCode::GreaterEqual: {
                 Value rhs = pop(), lhs = pop();
                 auto a = number(lhs, at); if (!a) return Result<Value>::failure(a.error());
                 auto b = number(rhs, at); if (!b) return Result<Value>::failure(b.error());
@@ -181,6 +183,8 @@ Result<Value> execute_bytecode(const BytecodeChunk& chunk,
                     case OpCode::Power: stack.emplace_back(std::pow(x, y)); break;
                     case OpCode::LessThan: stack.emplace_back(x < y); break;
                     case OpCode::LessEqual: stack.emplace_back(x <= y); break;
+                    case OpCode::GreaterThan: stack.emplace_back(x > y); break;
+                    case OpCode::GreaterEqual: stack.emplace_back(x >= y); break;
                     default: break;
                 }
                 break;
