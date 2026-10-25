@@ -738,7 +738,11 @@ Result<Value> VM::execute_source(std::string_view source) {
             state.table_entries += table.size();
         }
         Lexer lexer(source);
-        Parser parser(lexer.scan(), impl_->tables, impl_->functions, state);
+        auto tokens = lexer.scan();
+        if (tokens.size() > impl_->options.max_tokens) {
+            return Result<Value>::failure("Token limit exceeded");
+        }
+        Parser parser(std::move(tokens), impl_->tables, impl_->functions, state);
         return Result<Value>::success(parser.run());
     } catch (const std::exception& e) {
         impl_->tables = std::move(tables_before);
