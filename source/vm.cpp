@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -14,7 +16,8 @@ namespace {
 enum class TokenKind {
     End, Number, String, Identifier,
     Plus, Minus, Star, Slash, Percent, Caret, Concat,
-    LeftParen, RightParen, Semicolon, Comma,
+    LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
+    Dot, Semicolon, Comma,
     Equal, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual
 };
 
@@ -81,11 +84,15 @@ public:
                 case '^': simple(tokens, TokenKind::Caret, start); break;
                 case '(': simple(tokens, TokenKind::LeftParen, start); break;
                 case ')': simple(tokens, TokenKind::RightParen, start); break;
+                case '{': simple(tokens, TokenKind::LeftBrace, start); break;
+                case '}': simple(tokens, TokenKind::RightBrace, start); break;
+                case '[': simple(tokens, TokenKind::LeftBracket, start); break;
+                case ']': simple(tokens, TokenKind::RightBracket, start); break;
                 case ';': simple(tokens, TokenKind::Semicolon, start); break;
                 case ',': simple(tokens, TokenKind::Comma, start); break;
                 case '.':
                     if (peek(1) == '.') { pos_ += 2; tokens.push_back({TokenKind::Concat, "..", start}); }
-                    else throw std::runtime_error("Unexpected '.' at offset " + std::to_string(start));
+                    else simple(tokens, TokenKind::Dot, start);
                     break;
                 case '=': two(tokens, '=', TokenKind::EqualEqual, TokenKind::Equal, start); break;
                 case '~':
@@ -164,9 +171,27 @@ std::string stringify_for_concat(const Value& value, const Token& token) {
     throw std::runtime_error("Concatenation expects strings or numbers at offset " + std::to_string(token.offset));
 }
 
+using Table = std::unordered_map<std::string, Value>;
+
+std::string table_key(const Value& value, const Token& token) {
+    if (const auto* s = std::get_if<std::string>(&value)) return "s:" + *s;
+    if (const auto* n = std::get_if<double>(&value)) {
+        if (!std::isfinite(*n)) throw std::runtime_error("Table index cannot be NaN or infinity at offset " + std::to_string(token.offset));
+        std::ostringstream out;
+        out << "n:" << std::setprecision(17) << *n;
+        return out.str();
+    }
+    if (const auto* b = std::get_if<bool>(&value)) return *b ? "b:true" : "b:false";
+    if (std::holds_alternative<Nil>(value)) throw std::runtime_error("Table index cannot be nil at offset " + std::to_string(token.offset));
+    if (const auto* t = std::get_if<TableRef>(&value)) return "t:" + std::to_string(t->index);
+    if (const auto* f = std::get_if<FunctionRef>(&value)) return "f:" + std::to_string(f->index);
+    throw std::runtime_error("Unsupported table index at offset " + std::to_string(token.offset));
+}
+
 class Parser {
 public:
-    explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+    explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables)
+        : tokens_(std::move(tokens)), tables_(tables) {}
 
     Value run() {
         while (!check(TokenKind::End)) {
@@ -186,6 +211,29 @@ public:
                 auto it = variables_.find(name);
                 if (it == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
                 it->second = expression();
+            } else if (is_simple_table_assignment()) {
+                const auto name = advance().text;
+                const auto variable = variables_.find(name);
+                if (variable == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
+                Token key_token = peek();
+                Value key = Nil{};
+                if (match(TokenKind::Dot)) {
+                    key_token = consume(TokenKind::Identifier, "Expected field name after '.'");
+                    key = key_token.text;
+                } else {
+                    consume(TokenKind::LeftBracket, "Expected '['");
+                    key = expression();
+                    key_token = previous();
+                    consume(TokenKind::RightBracket, "Expected ']' after index");
+                }
+                consume(TokenKind::Equal, "Expected '=' in table assignment");
+                Value assigned = expression();
+                const auto* ref = std::get_if<TableRef>(&variable->second);
+                if (!ref) fail_at(key_token, "Attempt to index a " + type_name(variable->second) + " value");
+                if (ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
+                const auto encoded = table_key(key, key_token);
+                if (std::holds_alternative<Nil>(assigned)) tables_[ref->index].erase(encoded);
+                else tables_[ref->index][encoded] = std::move(assigned);
             } else {
                 (void)expression();
             }
@@ -272,25 +320,108 @@ private:
         return left;
     }
     Value primary() {
+        Value value = Nil{};
         if (match(TokenKind::Number)) {
             const auto& t = previous(); char* end = nullptr;
             const double n = std::strtod(t.text.c_str(), &end);
             if (!end || *end != '\0' || !std::isfinite(n)) fail_at(t, "Invalid numeric literal");
-            return n;
-        }
-        if (match(TokenKind::String)) return previous().text;
-        if (match(TokenKind::LeftParen)) { Value v = expression(); consume(TokenKind::RightParen, "Expected ')' after expression"); return v; }
-        if (match(TokenKind::Identifier)) {
+            value = n;
+        } else if (match(TokenKind::String)) {
+            value = previous().text;
+        } else if (match(TokenKind::LeftParen)) {
+            value = expression();
+            consume(TokenKind::RightParen, "Expected ')' after expression");
+        } else if (match(TokenKind::LeftBrace)) {
+            const auto open = previous();
+            if (tables_.size() >= static_cast<std::size_t>(UINT32_MAX)) fail_at(open, "Too many tables");
+            const auto table_index = static_cast<std::uint32_t>(tables_.size());
+            tables_.emplace_back();
+            value = TableRef{table_index};
+            double array_index = 1.0;
+            while (!check(TokenKind::RightBrace) && !check(TokenKind::End)) {
+                Value key = Nil{};
+                Value item = Nil{};
+                Token key_token = peek();
+                if (match(TokenKind::LeftBracket)) {
+                    key = expression();
+                    key_token = previous();
+                    consume(TokenKind::RightBracket, "Expected ']' after table key");
+                    consume(TokenKind::Equal, "Expected '=' after table key");
+                    item = expression();
+                } else if (check(TokenKind::Identifier) && check_next(TokenKind::Equal)) {
+                    key = advance().text;
+                    key_token = previous();
+                    advance();
+                    item = expression();
+                } else {
+                    key = array_index++;
+                    item = expression();
+                }
+                auto& table = tables_[table_index];
+                const auto encoded = table_key(key, key_token);
+                if (std::holds_alternative<Nil>(item)) table.erase(encoded);
+                else table[encoded] = std::move(item);
+                if (!match(TokenKind::Comma) && !match(TokenKind::Semicolon)) break;
+            }
+            consume(TokenKind::RightBrace, "Expected '}' after table constructor");
+        } else if (match(TokenKind::Identifier)) {
             const auto token = previous();
-            if (token.text == "nil") return Nil{};
-            if (token.text == "true") return true;
-            if (token.text == "false") return false;
-            const auto it = variables_.find(token.text);
-            if (it == variables_.end()) fail_at(token, "Unknown variable '" + token.text + "'");
-            return it->second;
+            if (token.text == "nil") value = Nil{};
+            else if (token.text == "true") value = true;
+            else if (token.text == "false") value = false;
+            else {
+                const auto it = variables_.find(token.text);
+                if (it == variables_.end()) fail_at(token, "Unknown variable '" + token.text + "'");
+                value = it->second;
+            }
+        } else {
+            fail("Expected expression");
         }
-        fail("Expected expression");
+
+        while (true) {
+            Token key_token = peek();
+            Value key = Nil{};
+            if (match(TokenKind::Dot)) {
+                key_token = consume(TokenKind::Identifier, "Expected field name after '.'");
+                key = key_token.text;
+            } else if (match(TokenKind::LeftBracket)) {
+                key = expression();
+                key_token = previous();
+                consume(TokenKind::RightBracket, "Expected ']' after index");
+            } else {
+                break;
+            }
+            const auto* table_ref = std::get_if<TableRef>(&value);
+            if (!table_ref) fail_at(key_token, "Attempt to index a " + type_name(value) + " value");
+            if (table_ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
+            const auto it = tables_[table_ref->index].find(table_key(key, key_token));
+            value = it == tables_[table_ref->index].end() ? Value{Nil{}} : it->second;
+        }
+        return value;
     }
+    bool is_simple_table_assignment() const {
+        if (!check(TokenKind::Identifier) || (!check_next(TokenKind::Dot) && !check_next(TokenKind::LeftBracket))) return false;
+        std::size_t i = current_ + 1;
+        if (tokens_[i].kind == TokenKind::Dot) {
+            i += 2;
+            return i < tokens_.size() && tokens_[i].kind == TokenKind::Equal;
+        }
+        ++i;
+        int brackets = 1;
+        int parens = 0;
+        for (; i < tokens_.size(); ++i) {
+            const auto kind = tokens_[i].kind;
+            if (kind == TokenKind::LeftBracket) ++brackets;
+            else if (kind == TokenKind::RightBracket && --brackets == 0) {
+                ++i;
+                return i < tokens_.size() && tokens_[i].kind == TokenKind::Equal;
+            } else if (kind == TokenKind::LeftParen) ++parens;
+            else if (kind == TokenKind::RightParen) --parens;
+            if (kind == TokenKind::End || (parens < 0)) return false;
+        }
+        return false;
+    }
+
     bool check(TokenKind kind) const { return peek().kind == kind; }
     bool check_next(TokenKind kind) const { return current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == kind; }
     bool match(TokenKind kind) { if (!check(kind)) return false; advance(); return true; }
@@ -305,10 +436,11 @@ private:
     std::vector<Token> tokens_;
     std::size_t current_{};
     std::unordered_map<std::string, Value> variables_;
+    std::vector<Table>& tables_;
 };
 } // namespace
 
-struct VM::Impl {};
+struct VM::Impl { std::vector<Table> tables; };
 
 VM::VM() : impl_(std::make_unique<Impl>()) {}
 VM::~VM() = default;
@@ -320,7 +452,7 @@ Result<Value> VM::execute_source(std::string_view source) {
     if (source.empty()) return Result<Value>::failure("Source code is empty");
     try {
         Lexer lexer(source);
-        Parser parser(lexer.scan());
+        Parser parser(lexer.scan(), impl_->tables);
         return Result<Value>::success(parser.run());
     } catch (const std::exception& e) {
         return Result<Value>::failure(e.what());
