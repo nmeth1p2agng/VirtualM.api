@@ -23,8 +23,24 @@ int main() {
     assert(std::get<double>(locals.value()) == 15.0);
 
     const auto strings = vm.execute_source("return 'lu' .. 'au'");
-    // Concatenation is not in this milestone; unsupported syntax must fail safely.
-    assert(!strings);
+    assert(strings);
+    assert(std::get<std::string>(strings.value()) == "luau");
+
+    const auto concat_precedence = vm.execute_source("return 'x' .. 'y' .. 'z'");
+    assert(concat_precedence);
+    assert(std::get<std::string>(concat_precedence.value()) == "xyz");
+
+    const auto exponent_precedence = vm.execute_source("return -2 ^ 2");
+    assert(exponent_precedence);
+    assert(std::get<double>(exponent_precedence.value()) == -4.0);
+
+    const auto negative_exponent = vm.execute_source("return 2 ^ -2");
+    assert(negative_exponent);
+    assert(std::abs(std::get<double>(negative_exponent.value()) - 0.25) < 1e-12);
+
+    const auto scientific = vm.execute_source("return 1.5e2");
+    assert(scientific);
+    assert(std::get<double>(scientific.value()) == 150.0);
 
     const auto comparison = vm.execute_source("return (4 >= 4) == true");
     assert(comparison);
