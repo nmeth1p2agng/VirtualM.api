@@ -28,6 +28,8 @@ enum class OpCode : std::uint8_t {
     Equal,
     LessThan,
     LessEqual,
+    GreaterThan,
+    GreaterEqual,
     Concatenate,
     GetTable,
     SetTable,
