@@ -16,6 +16,11 @@ int main() {
            "local s=[=[a -- b\n c]=]return s");
     assert(minify_lua_source("return foo --[=[comment]=]\n + 1") ==
            "return foo+1");
+    // Whitespace must not be removed when it would merge separate operators.
+    assert(minify_lua_source("local x = a + = b") == "local x=a+ =b");
+    assert(minify_lua_source("local x = a .. . b") == "local x=a.. .b");
+    assert(minify_lua_source("local x = a / / b") == "local x=a/ /b");
+    assert(minify_lua_source("local x = 1 . . 2") == "local x=1 . . 2");
 
     const auto renamed = obfuscate_lua_source("local angka = 10\nreturn angka + 20");
     assert(renamed.find("local _v0=10") != std::string::npos);
