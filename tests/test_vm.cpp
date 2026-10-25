@@ -64,5 +64,32 @@ int main() {
     const auto invalid_exponent = vm.execute_source("return 1e+");
     assert(!invalid_exponent);
 
+    const auto table_field = vm.execute_source("local t = {x = 7}; return t.x");
+    assert(table_field);
+    assert(std::get<double>(table_field.value()) == 7.0);
+
+    const auto table_index = vm.execute_source(R"(local t = {["name"] = 'Luau'}; return t["name"])");
+    assert(table_index);
+    assert(std::get<std::string>(table_index.value()) == "Luau");
+
+    const auto table_array = vm.execute_source("return {10, 20, 30}[2]");
+    assert(table_array);
+    assert(std::get<double>(table_array.value()) == 20.0);
+
+    const auto nested_table = vm.execute_source("return {nested = {value = 42}}.nested.value");
+    assert(nested_table);
+    assert(std::get<double>(nested_table.value()) == 42.0);
+
+    const auto table_write = vm.execute_source("local t = {x = 1}; t.x = 9; t['y'] = 5; return t.x + t.y");
+    assert(table_write);
+    assert(std::get<double>(table_write.value()) == 14.0);
+
+    const auto missing_table_key = vm.execute_source("return {x = 1}.missing");
+    assert(missing_table_key);
+    assert(std::holds_alternative<Nil>(missing_table_key.value()));
+
+    const auto invalid_table_index = vm.execute_source("return 5.x");
+    assert(!invalid_table_index);
+
     return 0;
 }
