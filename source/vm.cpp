@@ -15,7 +15,7 @@ namespace luau_vm {
 namespace {
 
 enum class TokenKind {
-    End, Number, , Identifier,
+    End, Number, String, Identifier,
     Plus, Minus, Star, Slash, FloorSlash, Percent, Caret, Concat,
     LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
     Dot, Semicolon, Comma, Hash,
@@ -722,6 +722,8 @@ VM& VM::operator=(VM&&) noexcept = default;
 Result<Value> VM::execute_source(std::string_view source) {
     if (!impl_) return Result<Value>::failure("VM is not initialized");
     if (source.empty()) return Result<Value>::failure("Source code is empty");
+    if (source.size() > impl_->options.max_source_bytes)
+        return Result<Value>::failure("Source size limit exceeded");
     try {
         ExecutionState state{impl_->options};
         // Recount persistent objects in case the VM has executed earlier snippets.
