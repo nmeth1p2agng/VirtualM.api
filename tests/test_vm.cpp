@@ -26,21 +26,13 @@ int main() {
     assert(strings);
     assert(std::get<std::string>(strings.value()) == "luau");
 
-    const auto concat_precedence = vm.execute_source("return 'x' .. 'y' .. 'z'");
-    assert(concat_precedence);
-    assert(std::get<std::string>(concat_precedence.value()) == "xyz");
+    const auto numeric_concat = vm.execute_source("return 12 .. 'px'");
+    assert(numeric_concat);
+    assert(std::get<std::string>(numeric_concat.value()) == "12px");
 
-    const auto exponent_precedence = vm.execute_source("return -2 ^ 2");
-    assert(exponent_precedence);
-    assert(std::get<double>(exponent_precedence.value()) == -4.0);
-
-    const auto negative_exponent = vm.execute_source("return 2 ^ -2");
-    assert(negative_exponent);
-    assert(std::abs(std::get<double>(negative_exponent.value()) - 0.25) < 1e-12);
-
-    const auto scientific = vm.execute_source("return 1.5e2");
-    assert(scientific);
-    assert(std::get<double>(scientific.value()) == 150.0);
+    const auto concat_associativity = vm.execute_source("return 'a' .. 'b' .. 'c'");
+    assert(concat_associativity);
+    assert(std::get<std::string>(concat_associativity.value()) == "abc");
 
     const auto comparison = vm.execute_source("return (4 >= 4) == true");
     assert(comparison);
@@ -50,12 +42,27 @@ int main() {
     assert(nil_result);
     assert(std::holds_alternative<Nil>(nil_result.value()));
 
+    const auto exponent = vm.execute_source("return 1.5e2");
+    assert(exponent);
+    assert(std::get<double>(exponent.value()) == 150.0);
+
+    const auto precedence = vm.execute_source("return -2 ^ 2");
+    assert(precedence);
+    assert(std::get<double>(precedence.value()) == -4.0);
+
+    const auto negative_exponent = vm.execute_source("return 2 ^ -2");
+    assert(negative_exponent);
+    assert(std::abs(std::get<double>(negative_exponent.value()) - 0.25) < 1e-12);
+
     const auto unknown = vm.execute_source("return missing + 1");
     assert(!unknown);
     assert(unknown.error().find("Unknown variable") != std::string::npos);
 
     const auto malformed = vm.execute_source("return (1 + 2");
     assert(!malformed);
+
+    const auto invalid_exponent = vm.execute_source("return 1e+");
+    assert(!invalid_exponent);
 
     return 0;
 }
