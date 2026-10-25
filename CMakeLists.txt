@@ -9,7 +9,7 @@ add_library(luau_vm STATIC source/vm.cpp source/bytecode.cpp source/bytecode_com
 target_include_directories(luau_vm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(luau_vm PRIVATE -Wall -Wextra -Wpedantic)
 
-add_executable(virtualm_api source/server.cpp)
+add_executable(virtualm_api source/server.cpp source/obfuscator.cpp)
 target_link_libraries(virtualm_api PRIVATE luau_vm)
 
 include(CTest)
