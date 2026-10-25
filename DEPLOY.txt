@@ -1,0 +1,35 @@
+VirtualM.api — Render deployment
+
+FILE YANG DITAMBAHKAN
+- CMakeLists.txt
+- Dockerfile
+- render.yaml
+- source/server.cpp.txt
+
+SEBELUM DEPLOY
+1. Ekstrak ZIP ini ke folder root repositori VirtualM.api yang berisi folder include/ dan source/vm.cpp.
+2. Ubah nama source/server.cpp.txt menjadi source/server.cpp.
+3. Pastikan root repositori berisi CMakeLists.txt, Dockerfile, render.yaml, include/, source/vm.cpp, source/server.cpp, dan tests/.
+4. Commit dan push semua perubahan ke GitHub.
+
+DEPLOY DI RENDER
+1. Buka https://render.com dan masuk.
+2. Pilih New > Blueprint.
+3. Hubungkan GitHub dan pilih repositori VirtualM.api.
+4. Render membaca render.yaml; periksa konfigurasi lalu buat service.
+5. Tunggu build selesai. Buka URL service dan tambahkan /health.
+   Respons yang diharapkan: JSON dengan status "ok".
+
+UJI API
+POST /api/execute
+Header: Content-Type: application/json
+Body:
+{"source":"return 1 + 2 * 3"}
+
+Hasil yang diharapkan:
+{"ok":true,"result":{"type":"number","value":7}}
+
+CATATAN PENTING
+- Ini menyiapkan layanan HTTP untuk subset bahasa Luau yang saat ini diimplementasikan; bukan dukungan penuh seluruh Luau.
+- Deployment belum terbukti berhasil sampai build dan tes pada Render selesai.
+- Jangan kirim kode rahasia atau kode dari pengguna yang tidak dipercaya ke API publik ini. Sebelum penggunaan publik, tambahkan autentikasi, batas permintaan, dan perlindungan penyalahgunaan.
