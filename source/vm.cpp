@@ -124,7 +124,7 @@ private:
         bool saw_dot = false;
         if (source_[pos_] == '.') { saw_dot = true; ++pos_; }
         while (is_digit(peek(0))) ++pos_;
-        if (!saw_dot && peek(0) == '.' && peek(1) != '.') {
+        if (!saw_dot && peek(0) == '.' && is_digit(peek(1))) {
             saw_dot = true; ++pos_;
             while (is_digit(peek(0))) ++pos_;
         }
@@ -194,52 +194,156 @@ public:
         : tokens_(std::move(tokens)), tables_(tables) {}
 
     Value run() {
-        while (!check(TokenKind::End)) {
-            if (match_identifier("local")) {
-                const auto name = consume(TokenKind::Identifier, "Expected variable name after 'local'").text;
-                Value value = Nil{};
-                if (match(TokenKind::Equal)) value = expression();
-                variables_[name] = std::move(value);
-            } else if (match_identifier("return")) {
-                if (check(TokenKind::End) || check(TokenKind::Semicolon)) return Nil{};
-                Value result = expression();
-                match(TokenKind::Semicolon);
-                if (!check(TokenKind::End)) fail("Only one return value is supported in this milestone");
-                return result;
-            } else if (check(TokenKind::Identifier) && check_next(TokenKind::Equal)) {
-                const auto name = advance().text; advance();
-                auto it = variables_.find(name);
-                if (it == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
-                it->second = expression();
-            } else if (is_simple_table_assignment()) {
-                const auto name = advance().text;
-                const auto variable = variables_.find(name);
-                if (variable == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
-                Token key_token = peek();
-                Value key = Nil{};
-                if (match(TokenKind::Dot)) {
-                    key_token = consume(TokenKind::Identifier, "Expected field name after '.'");
-                    key = key_token.text;
-                } else {
-                    consume(TokenKind::LeftBracket, "Expected '['");
-                    key = expression();
-                    key_token = previous();
-                    consume(TokenKind::RightBracket, "Expected ']' after index");
-                }
-                consume(TokenKind::Equal, "Expected '=' in table assignment");
-                Value assigned = expression();
-                const auto* ref = std::get_if<TableRef>(&variable->second);
-                if (!ref) fail_at(key_token, "Attempt to index a " + type_name(variable->second) + " value");
-                if (ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
-                const auto encoded = table_key(key, key_token);
-                if (std::holds_alternative<Nil>(assigned)) tables_[ref->index].erase(encoded);
-                else tables_[ref->index][encoded] = std::move(assigned);
+        while (!check(TokenKind::End) && !returned_) {
+            if (match_identifier("if")) {
+                execute_if();
+            } else if (match_identifier("while")) {
+                execute_while();
             } else {
-                (void)expression();
+                statement();
             }
             match(TokenKind::Semicolon);
         }
-        return Nil{};
+        return return_value_;
+    }
+private:
+    void statement() {
+        if (match_identifier("local")) {
+            const auto name = consume(TokenKind::Identifier, "Expected variable name after 'local'").text;
+            Value value = Nil{};
+            if (match(TokenKind::Equal)) value = expression();
+            variables_[name] = std::move(value);
+        } else if (match_identifier("return")) {
+            if (check(TokenKind::End) || check(TokenKind::Semicolon) || is_block_terminator()) return_value_ = Nil{};
+            else return_value_ = expression();
+            returned_ = true;
+        } else if (check(TokenKind::Identifier) && check_next(TokenKind::Equal)) {
+            const auto name = advance().text; advance();
+            auto it = variables_.find(name);
+            if (it == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
+            it->second = expression();
+        } else if (is_simple_table_assignment()) {
+            const auto name = advance().text;
+            const auto variable = variables_.find(name);
+            if (variable == variables_.end()) fail("Assignment to unknown variable '" + name + "'");
+            Token key_token = peek();
+            Value key = Nil{};
+            if (match(TokenKind::Dot)) {
+                key_token = consume(TokenKind::Identifier, "Expected field name after '.'");
+                key = key_token.text;
+            } else {
+                consume(TokenKind::LeftBracket, "Expected '['");
+                key = expression();
+                key_token = previous();
+                consume(TokenKind::RightBracket, "Expected ']' after index");
+            }
+            consume(TokenKind::Equal, "Expected '=' in table assignment");
+            Value assigned = expression();
+            const auto* ref = std::get_if<TableRef>(&variable->second);
+            if (!ref) fail_at(key_token, "Attempt to index a " + type_name(variable->second) + " value");
+            if (ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
+            const auto encoded = table_key(key, key_token);
+            if (std::holds_alternative<Nil>(assigned)) tables_[ref->index].erase(encoded);
+            else tables_[ref->index][encoded] = std::move(assigned);
+        } else {
+            (void)expression();
+        }
+    }
+
+    bool is_block_terminator() const {
+        return check(TokenKind::Identifier) && (peek().text == "end" || peek().text == "else" || peek().text == "elseif");
+    }
+
+    std::size_t find_block_end(std::size_t from) const {
+        int depth = 1;
+        for (std::size_t i = from; i < tokens_.size(); ++i) {
+            if (tokens_[i].kind != TokenKind::Identifier) continue;
+            const auto& word = tokens_[i].text;
+            if (word == "if" || word == "while") ++depth;
+            else if (word == "end" && --depth == 0) return i;
+        }
+        throw std::runtime_error("Expected 'end' for control-flow block");
+    }
+
+    void execute_range(std::size_t begin, std::size_t end) {
+        const auto saved = current_;
+        current_ = begin;
+        while (current_ < end && !returned_) {
+            if (match_identifier("if")) execute_if();
+            else if (match_identifier("while")) execute_while();
+            else statement();
+            match(TokenKind::Semicolon);
+        }
+        current_ = saved;
+    }
+
+    void execute_if() {
+        const auto first_condition = current_;
+        Value condition = expression();
+        consume_identifier("then", "Expected 'then' after if condition");
+        const auto first_body = current_;
+        const auto block_end = find_block_end(first_body);
+        bool taken = false;
+        if (truthy(condition)) {
+            execute_range(first_body, find_branch_boundary(first_body, block_end));
+            taken = true;
+        }
+        current_ = find_branch_boundary(first_body, block_end);
+        while (current_ < block_end && check(TokenKind::Identifier) && peek().text == "elseif") {
+            advance();
+            const auto cond_start = current_;
+            Value branch_condition = expression();
+            consume_identifier("then", "Expected 'then' after elseif condition");
+            const auto body_start = current_;
+            const auto boundary = find_branch_boundary(body_start, block_end);
+            if (!taken && truthy(branch_condition)) { execute_range(body_start, boundary); taken = true; }
+            current_ = boundary;
+            (void)cond_start;
+        }
+        if (current_ < block_end && match_identifier("else")) {
+            if (!taken) execute_range(current_, block_end);
+            current_ = block_end;
+        }
+        consume_identifier("end", "Expected 'end' after if block");
+        (void)first_condition;
+    }
+
+    std::size_t find_branch_boundary(std::size_t from, std::size_t block_end) const {
+        int depth = 0;
+        for (std::size_t i = from; i < block_end; ++i) {
+            if (tokens_[i].kind != TokenKind::Identifier) continue;
+            const auto& word = tokens_[i].text;
+            if (word == "if" || word == "while") ++depth;
+            else if (word == "end" && depth > 0) --depth;
+            else if (depth == 0 && (word == "elseif" || word == "else")) return i;
+        }
+        return block_end;
+    }
+
+    void execute_while() {
+        const auto condition_start = current_;
+        (void)expression();
+        const auto condition_end = current_;
+        consume_identifier("do", "Expected 'do' after while condition");
+        const auto body_start = current_;
+        const auto block_end = find_block_end(body_start);
+        std::size_t iterations = 0;
+        while (!returned_) {
+            const auto saved = current_;
+            current_ = condition_start;
+            Value condition = expression();
+            current_ = saved;
+            if (!truthy(condition)) break;
+            if (++iterations > 100000) fail_at(tokens_[condition_start], "Loop iteration limit exceeded");
+            execute_range(body_start, block_end);
+        }
+        current_ = block_end;
+        consume_identifier("end", "Expected 'end' after while block");
+        (void)condition_end;
+    }
+
+    void consume_identifier(std::string_view word, const std::string& message) {
+        if (!match_identifier(word)) fail(message);
     }
 private:
     Value expression() { return equality(); }
@@ -437,6 +541,8 @@ private:
     std::size_t current_{};
     std::unordered_map<std::string, Value> variables_;
     std::vector<Table>& tables_;
+    Value return_value_{Nil{}};
+    bool returned_{};
 };
 } // namespace
 
