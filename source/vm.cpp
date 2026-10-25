@@ -203,6 +203,9 @@ struct ExecutionState {
     std::size_t steps{};
     std::size_t table_entries{};
     std::size_t call_depth{};
+    std::size_t expression_depth{};
+    std::size_t concat_depth{};
+    std::size_t unary_depth{};
 
     void charge(std::size_t amount = 1) {
         if (amount > limits.max_execution_steps - std::min(steps, limits.max_execution_steps))
@@ -212,6 +215,18 @@ struct ExecutionState {
 };
 
 class Parser {
+    class DepthGuard {
+    public:
+        DepthGuard(std::size_t& depth, std::size_t limit, const char* message) : depth_(depth) {
+            if (depth_ >= limit) throw std::runtime_error(message);
+            ++depth_;
+        }
+        ~DepthGuard() { --depth_; }
+        DepthGuard(const DepthGuard&) = delete;
+        DepthGuard& operator=(const DepthGuard&) = delete;
+    private:
+        std::size_t& depth_;
+    };
 public:
     explicit Parser(std::vector<Token> tokens, std::vector<Table>& tables,
                     std::vector<FunctionDef>& functions, ExecutionState& state,
@@ -413,7 +428,11 @@ private:
         if (!match_identifier(word)) fail(message);
     }
 private:
-    Value expression() { return logical_or(); }
+    Value expression() {
+        DepthGuard guard(state_.expression_depth, state_.limits.max_expression_depth,
+                         "Expression nesting limit exceeded");
+        return logical_or();
+    }
     Value logical_or() {
         Value left = logical_and();
         while (match_identifier("or")) {
@@ -466,6 +485,8 @@ private:
         return left;
     }
     Value concat() {
+        DepthGuard guard(state_.concat_depth, state_.limits.max_expression_depth,
+                         "Concatenation nesting limit exceeded");
         Value left = term();
         if (match(TokenKind::Concat)) {
             const auto op = previous();
@@ -498,6 +519,8 @@ private:
         return left;
     }
     Value unary() {
+        DepthGuard guard(state_.unary_depth, state_.limits.max_expression_depth,
+                         "Unary expression nesting limit exceeded");
         if (match(TokenKind::Minus)) { const auto op = previous(); return -number(unary(), op); }
         if (match_identifier("not")) return !truthy(unary());
         if (match(TokenKind::Hash)) {
