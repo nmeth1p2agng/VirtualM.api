@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string_view>
 
@@ -8,9 +9,19 @@
 
 namespace luau_vm {
 
+// Resource limits for untrusted source. These limit interpreter work and
+// managed VM objects; they are not an operating-system security sandbox.
+struct VMOptions {
+    std::size_t max_execution_steps{1'000'000};
+    std::size_t max_tables{10'000};
+    std::size_t max_table_entries{100'000};
+    std::size_t max_functions{10'000};
+    std::size_t max_call_depth{128};
+};
+
 class VM {
 public:
-    VM();
+    explicit VM(VMOptions options = {});
     ~VM();
 
     VM(const VM&) = delete;
