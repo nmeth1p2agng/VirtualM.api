@@ -27,6 +27,16 @@ int main() {
     auto boolean_result = execute_bytecode(boolean.value(), constants);
     assert(boolean_result && std::get<bool>(boolean_result.value()));
 
+    auto greater = compile_bytecode_expression("5 > 3", constants);
+    assert(greater);
+    auto greater_result = execute_bytecode(greater.value(), constants);
+    assert(greater_result && std::get<bool>(greater_result.value()));
+
+    auto greater_equal = compile_bytecode_expression("3 >= 3", constants);
+    assert(greater_equal);
+    auto greater_equal_result = execute_bytecode(greater_equal.value(), constants);
+    assert(greater_equal_result && std::get<bool>(greater_equal_result.value()));
+
     auto invalid = compile_bytecode_expression("missing + 1", constants);
     assert(!invalid);
 
