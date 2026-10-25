@@ -123,6 +123,31 @@ int main() {
     assert(!function_arity);
     assert(function_arity.error().find("arguments") != std::string::npos);
 
+    const auto block_local_does_not_escape = vm.execute_source(
+        "if true then local hidden = 12 end; return hidden");
+    assert(!block_local_does_not_escape);
+    assert(block_local_does_not_escape.error().find("Unknown variable") != std::string::npos);
+
+    const auto block_scope_shadowing = vm.execute_source(
+        "local value = 3; if true then local value = 9 end; return value");
+    assert(block_scope_shadowing);
+    assert(std::get<double>(block_scope_shadowing.value()) == 3.0);
+
+    const auto outer_assignment_survives_block = vm.execute_source(
+        "local value = 3; if true then value = 11 end; return value");
+    assert(outer_assignment_survives_block);
+    assert(std::get<double>(outer_assignment_survives_block.value()) == 11.0);
+
+    const auto function_local_isolated = vm.execute_source(
+        "local function calc() local secret = 44; return secret end; calc(); return secret");
+    assert(!function_local_isolated);
+    assert(function_local_isolated.error().find("Unknown variable") != std::string::npos);
+
+    const auto while_local_does_not_escape = vm.execute_source(
+        "local i = 0; while i < 1 do local transient = 5; i = i + 1 end; return transient");
+    assert(!while_local_does_not_escape);
+    assert(while_local_does_not_escape.error().find("Unknown variable") != std::string::npos);
+
 
     return 0;
 }
