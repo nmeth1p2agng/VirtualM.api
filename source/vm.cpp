@@ -207,6 +207,11 @@ struct ExecutionState {
     std::size_t concat_depth{};
     std::size_t unary_depth{};
 
+    void check_string_size(std::size_t size, const Token& token) const {
+        if (size > limits.max_string_bytes)
+            throw std::runtime_error("String size limit exceeded at offset " + std::to_string(token.offset));
+    }
+
     void charge(std::size_t amount = 1) {
         if (amount > limits.max_execution_steps - std::min(steps, limits.max_execution_steps))
             throw std::runtime_error("Execution step limit exceeded");
@@ -288,8 +293,22 @@ private:
             if (!ref) fail_at(key_token, "Attempt to index a " + type_name(*variable) + " value");
             if (ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
             const auto encoded = table_key(key, key_token);
-            if (std::holds_alternative<Nil>(assigned)) tables_[ref->index].erase(encoded);
-            else tables_[ref->index][encoded] = std::move(assigned);
+            state_.check_string_size(encoded.size(), key_token);
+            auto& table = tables_[ref->index];
+            const auto existing = table.find(encoded);
+            if (std::holds_alternative<Nil>(assigned)) {
+                if (existing != table.end()) {
+                    table.erase(existing);
+                    if (state_.table_entries > 0) --state_.table_entries;
+                }
+            } else {
+                if (existing == table.end()) {
+                    if (state_.table_entries >= state_.limits.max_table_entries)
+                        fail_at(key_token, "Table entry limit exceeded");
+                    ++state_.table_entries;
+                }
+                table[encoded] = std::move(assigned);
+            }
         } else {
             (void)expression();
         }
@@ -491,7 +510,12 @@ private:
         if (match(TokenKind::Concat)) {
             const auto op = previous();
             Value right = concat(); // right-associative, as in Lua/Luau
-            left = stringify_for_concat(left, op) + stringify_for_concat(right, op);
+            const std::string left_text = stringify_for_concat(left, op);
+            const std::string right_text = stringify_for_concat(right, op);
+            if (right_text.size() > state_.limits.max_string_bytes ||
+                left_text.size() > state_.limits.max_string_bytes - right_text.size())
+                fail_at(op, "String size limit exceeded");
+            left = left_text + right_text;
         }
         return left;
     }
@@ -559,7 +583,9 @@ private:
             if (!end || *end != '\0' || !std::isfinite(n)) fail_at(t, "Invalid numeric literal");
             value = n;
         } else if (match(TokenKind::String)) {
-            value = previous().text;
+            const auto& token = previous();
+            state_.check_string_size(token.text.size(), token);
+            value = token.text;
         } else if (match(TokenKind::LeftParen)) {
             value = expression();
             consume(TokenKind::RightParen, "Expected ')' after expression");
@@ -592,6 +618,7 @@ private:
                 }
                 auto& table = tables_[table_index];
                 const auto encoded = table_key(key, key_token);
+                state_.check_string_size(encoded.size(), key_token);
                 const auto existing = table.find(encoded);
                 if (std::holds_alternative<Nil>(item)) {
                     if (existing != table.end()) { table.erase(existing); --state_.table_entries; }
@@ -662,7 +689,9 @@ private:
             const auto* table_ref = std::get_if<TableRef>(&value);
             if (!table_ref) fail_at(key_token, "Attempt to index a " + type_name(value) + " value");
             if (table_ref->index >= tables_.size()) fail_at(key_token, "Invalid table reference");
-            const auto it = tables_[table_ref->index].find(table_key(key, key_token));
+            const auto encoded = table_key(key, key_token);
+            state_.check_string_size(encoded.size(), key_token);
+            const auto it = tables_[table_ref->index].find(encoded);
             value = it == tables_[table_ref->index].end() ? Value{Nil{}} : it->second;
         }
         return value;
