@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "luau_vm/result.hpp"
+#include "luau_vm/value.hpp"
 
 namespace luau_vm {
 
@@ -18,8 +19,9 @@ public:
     VM(VM&&) noexcept;
     VM& operator=(VM&&) noexcept;
 
-    [[nodiscard]]
-    Result<bool> execute_source(std::string_view source);
+    // Executes the currently supported Luau subset and returns the first
+    // value from a return statement (nil when no value is returned).
+    [[nodiscard]] Result<Value> execute_source(std::string_view source);
 
 private:
     struct Impl;
