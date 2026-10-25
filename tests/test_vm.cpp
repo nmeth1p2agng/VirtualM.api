@@ -62,6 +62,22 @@ int main() {
     const auto malformed = vm.execute_source("return (1 + 2");
     assert(!malformed);
 
+    const auto break_numeric_for = vm.execute_source("local total = 0; for i = 1, 10 do if i == 4 then break end; total = total + i end; return total");
+    assert(break_numeric_for);
+    assert(std::get<double>(break_numeric_for.value()) == 6.0);
+
+    const auto break_while = vm.execute_source("local i = 0; while i < 10 do i = i + 1; if i == 3 then break end end; return i");
+    assert(break_while);
+    assert(std::get<double>(break_while.value()) == 3.0);
+
+    const auto break_outside_loop = vm.execute_source("break; return 1");
+    assert(!break_outside_loop);
+    assert(break_outside_loop.error().find("outside a loop") != std::string::npos);
+
+    const auto nested_break = vm.execute_source("local total = 0; for i = 1, 4 do for j = 1, 4 do break end; total = total + i end; return total");
+    assert(nested_break);
+    assert(std::get<double>(nested_break.value()) == 10.0);
+
     const auto invalid_exponent = vm.execute_source("return 1e+");
     assert(!invalid_exponent);
 
