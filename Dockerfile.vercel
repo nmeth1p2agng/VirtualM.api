@@ -1,20 +1,24 @@
 FROM debian:bookworm-slim AS build
 
-RUN apt-get update && apt-get install -y --no-install-recommends g++ cmake make ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ cmake make ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
 
-RUN if [ ! -f CMakeLists.txt ] && [ -f CMakeLists.txt.txt ]; then mv CMakeLists.txt.txt CMakeLists.txt; fi && find . -type f -name '.cpp.txt' -exec sh -c 'mv "$1" "${1%.txt}"' _ {} ; && find . -type f -name '.hpp.txt' -exec sh -c 'mv "$1" "${1%.txt}"' _ {} ; && find . -type f -name '*.h.txt' -exec sh -c 'mv "$1" "${1%.txt}"' _ {} ; && test -f CMakeLists.txt
+RUN set -eu; \
+    if [ ! -f CMakeLists.txt ] && [ -f CMakeLists.txt.txt ]; then \
+        mv CMakeLists.txt.txt CMakeLists.txt; \
+    fi; \
+    find . -type f \( -name '*.cpp.txt' -o -name '*.hpp.txt' -o -name '*.h.txt' \) \
+        -exec sh -c 'for f do mv "$f" "${f%.txt}"; done' sh {} +; \
+    test -f CMakeLists.txt
 
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF && cmake --build build --parallel 2
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && cmake --build build --parallel 2
 
 FROM debian:bookworm-slim AS runtime
 
 WORKDIR /app
-COPY --from=build /app/build/virtualm_api /app/virtualm_api
-
-ENV PORT=3000
-EXPOSE 3000
-
-CMD ["/app/virtualm_api"]
+COPY --from=build /app/build /app/build
